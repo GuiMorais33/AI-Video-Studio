@@ -21,7 +21,7 @@ def ffmpeg_bin(name: str = "ffmpeg") -> str:
     return path
 
 
-def _run(cmd: list[str]) -> subprocess.CompletedProcess:
+def run(cmd: list[str]) -> subprocess.CompletedProcess:
     proc = subprocess.run(cmd, capture_output=True, text=True)
     if proc.returncode != 0:
         tail = "\n".join(proc.stderr.strip().splitlines()[-15:])
@@ -51,7 +51,7 @@ class VideoInfo:
 
 
 def probe(path: Path) -> VideoInfo:
-    out = _run([
+    out = run([
         ffmpeg_bin("ffprobe"), "-v", "error", "-print_format", "json",
         "-show_streams", "-show_format", str(path),
     ]).stdout
@@ -101,7 +101,7 @@ def prepare_clip(
         "format=yuv420p",
     ])
     dst.parent.mkdir(parents=True, exist_ok=True)
-    _run([
+    run([
         ffmpeg_bin(), "-y", "-v", "error",
         "-ss", f"{start:.3f}", "-t", f"{max_seconds:.3f}", "-i", str(src),
         "-map", "0:v:0", "-map", "0:a:0?", "-vf", vf,
@@ -114,7 +114,7 @@ def prepare_clip(
 def extract_frames(clip: Path, frames_dir: Path) -> int:
     """Extrai quadros JPEG nomeados 00000.jpg, 00001.jpg... (formato aceito pelo SAM 2)."""
     frames_dir.mkdir(parents=True, exist_ok=True)
-    _run([
+    run([
         ffmpeg_bin(), "-y", "-v", "error", "-i", str(clip),
         "-q:v", "2", "-start_number", "0", str(frames_dir / "%05d.jpg"),
     ])
@@ -145,5 +145,5 @@ def encode_frames(
         "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(out),
     ]
     out.parent.mkdir(parents=True, exist_ok=True)
-    _run(cmd)
+    run(cmd)
     return out

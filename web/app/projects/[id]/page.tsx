@@ -14,6 +14,7 @@ import {
   fpsValue,
   overlayUrl,
 } from "@/lib/engine";
+import { WanPanel } from "./WanPanel";
 
 type Mode = 1 | 0; // 1 = incluir, 0 = excluir
 
@@ -324,6 +325,8 @@ export default function ProjectPage() {
           </div>
         </aside>
       </div>
+
+      <WanPanel project={project} locked={locked} run={run} />
 
       {exported && (
         <section className="compare card">

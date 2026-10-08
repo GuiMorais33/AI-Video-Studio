@@ -7,7 +7,7 @@ export type JobStatus = "queued" | "running" | "done" | "error";
 export interface Job {
   id: string;
   project_id: string;
-  kind: "track" | "export";
+  kind: "track" | "export" | "wan_package";
   status: JobStatus;
   progress: number;
   message: string | null;
@@ -49,6 +49,16 @@ export interface Project extends ProjectSummary {
   active_job: Job | null;
   jobs: Partial<Record<Job["kind"], Job>>;
   exports: Record<"preview.mp4" | "mask.mp4" | "masks.zip", boolean>;
+  reference: boolean;
+  wan: Record<WanFile, boolean>;
+}
+
+export type WanFile = "wan_package.zip" | "wan_input.mp4" | "wan_result.mp4" | "wan_final.mp4" | "comparativo.mp4";
+
+export interface WanPackageOptions {
+  resolution: "480p" | "720p";
+  fps: number | null;
+  prompt: string;
 }
 
 export interface Health {
@@ -106,7 +116,23 @@ export const engine = {
   clearClicks: (id: string) => request<{ ok: boolean }>(`/projects/${id}/clicks`, { method: "DELETE" }),
   track: (id: string) => request<Job>(`/projects/${id}/track`, { method: "POST" }),
   exportProject: (id: string) => request<Job>(`/projects/${id}/export`, { method: "POST" }),
+  uploadReference: (id: string, file: File) => {
+    const form = new FormData();
+    form.append("file", file);
+    return request<{ width: number; height: number }>(`/projects/${id}/reference`, { method: "POST", body: form });
+  },
+  wanPackage: (id: string, options: WanPackageOptions) => request<Job>(`/projects/${id}/wan-package`, json(options)),
+  uploadWanResult: (id: string, file: File) => {
+    const form = new FormData();
+    form.append("file", file);
+    return request<{ message: string; project: Project }>(`/projects/${id}/wan-result`, { method: "POST", body: form });
+  },
 };
+
+export const referenceUrl = (id: string, version: string | number) =>
+  `${ENGINE_URL}/projects/${id}/reference?v=${version}`;
+
+export const KAGGLE_GUIDE_URL = "https://github.com/GuiMorais33/AI-Video-Studio/blob/HEAD/docs/KAGGLE.md";
 
 export const frameUrl = (id: string, idx: number) => `${ENGINE_URL}/projects/${id}/frames/${idx}`;
 export const overlayUrl = (id: string, idx: number, version: string | number) =>

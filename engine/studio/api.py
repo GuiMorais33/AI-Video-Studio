@@ -26,6 +26,7 @@ from .models import checkpoint_path, get_model
 from .projects import EXPORT_FILES, create_project, export_project, project_paths
 from .session import TrackingSession
 from .tracking import DemoTracker, Sam2Tracker, Tracker, TrackerError
+from .wan import WAN_FILES, WanError, build_package, import_result, save_reference
 
 log = logging.getLogger(__name__)
 
@@ -38,6 +39,12 @@ def default_tracker_factory(settings: Settings) -> Callable[[], Tracker]:
         return Sam2Tracker(model.config, checkpoint_path(settings.models_dir, settings.sam2_model), settings.device)
 
     return factory
+
+
+class WanPackageIn(BaseModel):
+    resolution: Literal["480p", "720p"] = "480p"
+    fps: float | None = Field(default=None, gt=0, le=60)
+    prompt: str = Field(default="", max_length=1000)
 
 
 class ClickIn(BaseModel):
@@ -79,6 +86,10 @@ def create_app(
     async def tracker_error(_req: Request, exc: TrackerError):
         return JSONResponse(status_code=503, content={"detail": str(exc)})
 
+    @app.exception_handler(WanError)
+    async def wan_error(_req: Request, exc: WanError):
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+
     @app.exception_handler(JobConflict)
     async def job_conflict(_req: Request, exc: JobConflict):
         return JSONResponse(status_code=409, content={"detail": str(exc)})
@@ -106,7 +117,15 @@ def create_app(
             "active_job": db.active_job(project["id"]),
             "jobs": db.latest_jobs(project["id"]),
             "exports": {name: (paths.exports / name).exists() for name in EXPORT_FILES},
+            "reference": (paths.root / "reference.png").exists(),
+            "wan": {name: (paths.exports / name).exists() for name in WAN_FILES},
         }
+
+    def save_upload(upload: UploadFile, directory) -> Any:
+        tmp = directory / f".upload-{uuid.uuid4().hex}"
+        with open(tmp, "wb") as out:
+            shutil.copyfileobj(upload.file, out, 1 << 20)
+        return tmp
 
     @app.get("/health")
     def health() -> dict[str, Any]:
@@ -257,13 +276,56 @@ def create_app(
             raise HTTPException(404, "Tarefa não encontrada.")
         return job
 
+    @app.post("/projects/{project_id}/reference")
+    def upload_reference(project_id: str, file: UploadFile = File(...)) -> dict[str, Any]:
+        get_project(project_id)
+        root = project_paths(settings, project_id).root
+        tmp = save_upload(file, root)
+        try:
+            width, height = save_reference(tmp, root / "reference.png")
+        finally:
+            tmp.unlink(missing_ok=True)
+        return {"width": width, "height": height}
+
+    @app.get("/projects/{project_id}/reference")
+    def get_reference(project_id: str) -> FileResponse:
+        get_project(project_id)
+        path = project_paths(settings, project_id).root / "reference.png"
+        if not path.exists():
+            raise HTTPException(404, "Nenhuma imagem de referência enviada.")
+        return FileResponse(path, media_type="image/png", headers={"Cache-Control": "no-store"})
+
+    @app.post("/projects/{project_id}/wan-package", status_code=202)
+    def wan_package(project_id: str, body: WanPackageIn) -> dict[str, Any]:
+        get_project(project_id)
+
+        def run(progress: Callable[..., None]) -> str:
+            return build_package(
+                get_project(project_id), project_paths(settings, project_id).root,
+                resolution=body.resolution, fps=body.fps, prompt=body.prompt, progress=progress,
+            )
+
+        return jobs.submit(project_id, "wan_package", run)
+
+    @app.post("/projects/{project_id}/wan-result")
+    def wan_result(project_id: str, file: UploadFile = File(...)) -> dict[str, Any]:
+        project = get_project(project_id)
+        ensure_idle(project_id)
+        root = project_paths(settings, project_id).root
+        tmp = save_upload(file, root)
+        try:
+            message = import_result(project, root, tmp)
+        finally:
+            tmp.unlink(missing_ok=True)
+        return {"message": message, "project": payload(get_project(project_id))}
+
     @app.get("/projects/{project_id}/files/{name}")
     def get_file(project_id: str, name: str) -> FileResponse:
         get_project(project_id)
         paths = project_paths(settings, project_id)
         if name == "clip.mp4":
             path = paths.clip
-        elif name in EXPORT_FILES:
+        elif name in EXPORT_FILES or name in WAN_FILES:
             path = paths.exports / name
         else:
             raise HTTPException(404, "Arquivo desconhecido.")
