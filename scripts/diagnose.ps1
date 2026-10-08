@@ -106,9 +106,12 @@ if (-not $wsl) {
 } else {
     $list = & wsl.exe -l -v 2>&1 | ForEach-Object { ("" + $_).Replace([char]0, "").Trim() } | Where-Object { $_ }
     $distros = @()
-    foreach ($line in $list | Select-Object -Skip 1) {
+    foreach ($line in $list) {
+        # Linhas de distribuicao terminam com a versao do WSL (1 ou 2); cabecalho e avisos sao ignorados.
         $cols = ($line.TrimStart("*").Trim()) -split "\s+"
-        if ($cols.Count -ge 3) { $distros += [pscustomobject]@{ Name = $cols[0]; State = $cols[1]; Version = $cols[2] } }
+        if ($cols.Count -ge 3 -and $cols[-1] -match "^[12]$") {
+            $distros += [pscustomobject]@{ Name = $cols[0]; State = $cols[1]; Version = $cols[-1] }
+        }
     }
     if ($distros.Count -eq 0) {
         Show-Line "WSL" "instalado, sem distribuicoes"
