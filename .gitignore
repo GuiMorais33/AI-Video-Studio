@@ -1,0 +1,29 @@
+# Dados locais: vídeos, máscaras, banco SQLite e pesos de modelos
+/data/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+.pytest_cache/
+
+# Node / Next.js
+node_modules/
+.next/
+next-env.d.ts
+*.tsbuildinfo
+
+# Pesos de modelos fora de /data
+*.pt
+*.pth
+*.safetensors
+*.onnx
+*.gguf
+
+# Sistema
+.DS_Store
+Thumbs.db
+
+# Código de terceiros baixado pelo setup (SAM 2 oficial)
+/engine/.vendor/
