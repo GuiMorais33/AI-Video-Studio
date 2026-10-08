@@ -11,8 +11,8 @@ relação ao plano original são duas. O teste do Wan Animate veio para a Fase 3
 |---|---|---|---|
 | 1. Ambiente | Estrutura do projeto, instalador, diagnóstico de hardware | `scripts/diagnose.ps1` e `studio diagnose` rodam no PC do usuário | Código pronto; falta rodar no Windows do usuário |
 | 2. SAM 2.1 | Selecionar pessoa com clique, rastrear, corrigir, exportar prévia | Rastrear uma pessoa por 5 s e corrigir as máscaras, com vídeo real | **Validada com pesos reais em 2 vídeos reais** (ver abaixo); vale repetir com um vídeo seu |
-| 3. Teste do Wan Animate | Notebook Kaggle que roda o Wan 2.2 Animate (replacement) via ComfyUI sem interface, usando nossas máscaras | Um clipe de 3–5 s com personagem substituído, gerado sem custo; tempo e qualidade anotados | A fazer |
-| 4. Integração | Envio do clipe + máscara + referência do ChatGPT para o Kaggle e retorno do resultado ao estúdio | Fluxo de ponta a ponta disparado pelo estúdio | A fazer, se a Fase 3 passar |
+| 3. Teste do Wan Animate | Notebook Kaggle que roda o Wan 2.2 Animate (replace) com diffusers, usando nossas máscaras ([guia](KAGGLE.md)) | Um clipe de 3–5 s com personagem substituído, gerado sem custo; tempo e qualidade anotados | Notebook pronto e testado na CPU com modelos minúsculos; **falta a 1ª execução numa T4 real (sua conta Kaggle)** |
+| 4. Integração | Envio do clipe + máscara + referência do ChatGPT para o Kaggle e retorno do resultado ao estúdio | Fluxo de ponta a ponta disparado pelo estúdio | Implementada (botão "Gerar no Kaggle", API simulada nos testes); valida junto com a Fase 3 |
 | 5. Refinamento | Composição com bordas suaves, ajuste de cor, upscale para 1080×1920, áudio original | Vídeo final pronto para Reels com comparativo antes/depois | A fazer |
 | 6. Interface definitiva | Biblioteca de personagens, histórico, fila de gerações | Fluxo aprovado executado só pela interface | A fazer |
 | Opcional | Refino de rosto (FaceFusion ou similar) | Somente com modelo de licença comercial confirmada | Em espera |
@@ -74,20 +74,24 @@ O tempo do rastreamento é proporcional ao número de quadros. Para ir mais ráp
 O custo de cálculo é o mesmo com os pesos reais: os números valem como estimativa. Num PC de
 notebook comum, espere algo entre 3 e 10 minutos por clipe de 5 s.
 
-## Fase 3 — plano do teste do Wan Animate
+## Fase 3 — como foi montada
 
-1. **Qualidade:** passar o mesmo clipe por um demo hospedado do Wan 2.2 Animate para ver se a
-   qualidade do modelo atende ao objetivo (Reel de referência).
-2. **Kaggle (GPU T4):**
-   - ComfyUI + ComfyUI-GGUF + Wan2.2-Animate-14B em GGUF (Q4/Q5) + LoRA de 4 passos + LoRA de
-     reiluminação.
-   - Versões fixadas.
-3. **Entradas:**
-   - `clip.mp4`;
-   - `mask.mp4` do SAM 2;
-   - a imagem de referência do personagem, criada no ChatGPT.
-4. **Medir:**
-   - tempo de geração;
-   - VRAM máxima;
-   - qualidade em 480p.
-5. **Comparar:** Wan-Animate-2 (ago/2026), se tiver modo replacement.
+A pesquisa (out/2026) comparou três rotas: diffusers, ComfyUI sem interface e o repositório oficial
+do Wan. A escolhida foi o **diffusers 0.41.0**:
+
+- é um script Python puro, sem servidor nem interface (o perfil de menor risco no Kaggle);
+- dá para testar na CPU com modelos minúsculos;
+- carrega o transformer em GGUF Q4_K_M, que cabe na T4 com offload em blocos.
+
+O repositório oficial não roda na T4 sem modificações, porque exige FlashAttention-2. O ComfyUI
+fica como rota reserva.
+
+**Mudanças em relação ao pré-processamento oficial:**
+- A pose usa a caixa da máscara do SAM 2.1 em vez do detector YOLOv10. Acerta a pessoa escolhida
+  em vídeos com várias pessoas e evita a licença AGPL do YOLO.
+- A máscara vem do estúdio (já corrigida por você). Recebe a mesma dilatação do oficial e blocos
+  de 16 px, como no template oficial do ComfyUI.
+
+**Para a 1ª execução real:**
+- siga o [guia do Kaggle](KAGGLE.md);
+- traga o `relatorio.json`: tempos, VRAM, avisos e erro, se houver.

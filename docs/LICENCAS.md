@@ -9,7 +9,12 @@ Isto não é aconselhamento jurídico.
 | FFmpeg | LGPL/GPL (conforme a build) | Sim, para uso interno | Builds com libx264 são GPL; não redistribua binários sem cumprir a GPL |
 | Next.js, React, FastAPI, NumPy, Pillow | MIT/BSD | Sim | |
 | PyTorch | BSD-3 | Sim | |
-| Wan 2.2 Animate | Apache-2.0 | Sim | Conferir a licença do Wan-Animate-2 antes de usar |
+| Wan 2.2 Animate (pesos e código, inclusive o ViTPose do pré-processamento) | Apache-2.0 | Sim | Conferir a licença do Wan-Animate-2 antes de usar |
+| GGUF do Wan2.2-Animate (QuantStack) | Derivado do Apache-2.0 | Sim | Conversão dos pesos oficiais |
+| LoRA lightx2v (reempacotada pela Kijai) | Apache-2.0 (conferir na origem lightx2v) | Provável | Conferir antes de anúncios |
+| LoRA de reiluminação (Kijai/Wan) | Conferir | A confirmar | Opcional: o notebook gera sem ela |
+| diffusers, transformers, peft, accelerate | Apache-2.0 | Sim | |
+| YOLOv10 (detector do pré-processamento oficial) | AGPL-3.0 | Evitado | Não usamos: a caixa da pessoa vem da máscara do SAM 2.1 |
 | ComfyUI | GPL-3.0 | Sim, como ferramenta | Usar via API não transforma o estúdio em GPL |
 | FaceFusion (código) | OpenRAIL-AS | Com restrições de uso | Modelos têm licenças próprias |
 | inswapper (InsightFace) | Não comercial | **Não**, sem licença da InsightFace | Não usar em anúncios |

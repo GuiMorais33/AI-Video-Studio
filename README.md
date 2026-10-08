@@ -11,13 +11,21 @@ Referência (ChatGPT) ──► Wan 2.2 Animate, modo replacement (Fase 3) ◄�
                   FFmpeg: composição, áudio original, exportação MP4
 ```
 
-**Situação atual: Fases 1 e 2.**
+**Situação atual: Fases 1 e 2 prontas e validadas; Fase 3 pronta para o primeiro teste numa GPU.**
 
-- Preparo do vídeo.
-- Seleção da pessoa com cliques.
-- Rastreamento com SAM 2.1.
-- Correção em qualquer quadro.
-- Exportação da prévia (MP4 com áudio), da máscara em vídeo e das máscaras em PNG.
+- Fases 1 e 2, validadas com pesos reais do SAM 2.1 em vídeos reais:
+  - preparo do vídeo;
+  - seleção da pessoa com cliques;
+  - rastreamento com SAM 2.1;
+  - correção em qualquer quadro;
+  - exportação da prévia, da máscara e dos PNGs.
+- Fase 3:
+  - pacote para o Wan 2.2 Animate;
+  - notebook do Kaggle (GPU grátis);
+  - botão **Gerar no Kaggle**, que envia, roda e traz o resultado sozinho;
+  - importação com o áudio original e comparativo antes/depois.
+  - Tudo foi testado na CPU com modelos minúsculos. Falta a primeira execução numa T4 de verdade,
+    pela sua conta Kaggle: veja [docs/KAGGLE.md](docs/KAGGLE.md).
 
 O roteiro completo e o que foi revisado no plano original estão em
 [docs/ROADMAP.md](docs/ROADMAP.md) e [docs/AVALIACAO-DO-PLANO.md](docs/AVALIACAO-DO-PLANO.md).
@@ -87,6 +95,12 @@ Clone em `~/`, não em `/mnt/c/...`: o disco do Windows visto pelo WSL é bem ma
    novo.
 5. **Exportar:** gera `preview.mp4`, `mask.mp4` e `masks.zip`, com comparativo antes/depois na
    página.
+6. **Personagem (Kaggle):**
+   - envie a imagem do personagem (criada no ChatGPT, corpo inteiro);
+   - clique em **Gerar pacote para o Kaggle** e depois em **Gerar no Kaggle**;
+   - o resultado volta com o áudio original e um comparativo lado a lado.
+
+   Passo a passo e modo manual em [docs/KAGGLE.md](docs/KAGGLE.md).
 
 ### Linha de comando
 
@@ -128,8 +142,9 @@ engine/            Motor Python (FastAPI + SQLite + SAM 2.1 + FFmpeg)
     diagnose.py    Diagnóstico de hardware/software
   tests/           pytest (inclui teste com o SAM 2 real, se instalado)
 web/               Painel Next.js
+remote/kaggle/     Notebook do Wan 2.2 Animate (gerado de aivs_wan.py) e seus testes
 scripts/           instalar-windows.ps1, setup.sh, start.sh, node-env.sh, diagnose.ps1
-docs/              Roteiro, avaliação do plano, licenças
+docs/              Roteiro, avaliação do plano, guia do Kaggle, licenças
 data/              (gerado) projetos, studio.db, modelos — fora do Git
 ```
 
@@ -148,6 +163,9 @@ Cada projeto fica em `data/projects/<id>/`:
 ```bash
 cd engine && .venv/bin/python -m pytest -q
 cd web && npm run typecheck && npm run build
+# Notebook do Kaggle na CPU com modelos minúsculos (requer remote/kaggle/requirements-test.txt):
+python -m pytest -q remote/kaggle/tests
+python remote/kaggle/build_notebook.py   # regrava o .ipynb depois de mudar aivs_wan.py
 ```
 
 `tests/test_sam2_integration.py` roda o SAM 2.1 oficial de ponta a ponta. Ele usa pesos aleatórios

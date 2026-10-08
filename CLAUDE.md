@@ -29,3 +29,10 @@ STUDIO_TRACKER=demo engine/.venv/bin/studio serve  # motor sem IA, para mexer na
 - Tarefas longas (rastrear, exportar) rodam em um único worker (`jobs.py`), com progresso no
   SQLite. Cliques retornam 409 enquanto há tarefa ativa.
 - O painel (`web/`) fala direto com o motor via CORS (`NEXT_PUBLIC_ENGINE_URL`).
+- Fase 3:
+  - `remote/kaggle/aivs_wan.py` é a fonte do notebook. Depois de editá-lo, rode
+    `python remote/kaggle/build_notebook.py` (há um teste que falha se o `.ipynb` estiver
+    desatualizado).
+  - O motor envia o pacote ao Kaggle por `engine/studio/kaggle_remote.py`, com tarefas `kaggle`
+    numa fila separada.
+  - No Kaggle: só execução em lote, privada, sem túnel e sem interface.
