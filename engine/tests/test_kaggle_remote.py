@@ -227,3 +227,15 @@ def test_waits_for_new_dataset_version(monkeypatch, project_root):
     push_index = next(i for i, c in enumerate(api.calls) if c[0] == "push")
     assert len([c for c in api.calls[:push_index] if c[0] == "dataset_status"]) >= 3  # antes, envio, 2 esperas
     assert status_checks
+
+
+def test_rejected_token_is_not_kept(monkeypatch, tmp_path):
+    monkeypatch.setattr(kaggle_remote, "TOKEN_FILE", tmp_path / ".kaggle" / "access_token")
+
+    def refuse():
+        raise kaggle_remote.KaggleError("Não foi possível entrar no Kaggle.")
+
+    monkeypatch.setattr(kaggle_remote, "check_account", refuse)
+    with pytest.raises(kaggle_remote.KaggleError):
+        kaggle_remote.save_and_check_token("KGAT_tokeninvalido0123456789abcdef")
+    assert not (tmp_path / ".kaggle" / "access_token").exists()

@@ -63,7 +63,8 @@ def save_token(token: str) -> None:
 
 def _api():
     try:
-        # Importar o módulo de baixo nível evita o login automático de "import kaggle".
+        # O __init__ do pacote tenta um login automático e engole a falha (kaggle 2.2.4);
+        # aqui autenticamos de novo, de forma explícita, para dar uma mensagem clara.
         from kaggle.api.kaggle_api_extended import KaggleApi
     except ImportError as exc:
         raise KaggleError("Pacote 'kaggle' não instalado. Rode: bash scripts/setup.sh") from exc
@@ -76,6 +77,16 @@ def _api():
     if not user:
         raise KaggleError("Token do Kaggle sem usuário associado.")
     return api, user
+
+
+def save_and_check_token(token: str) -> dict[str, Any]:
+    """Salva o token e confere a conta; um token recusado não fica salvo."""
+    save_token(token)
+    try:
+        return check_account()
+    except KaggleError:
+        TOKEN_FILE.unlink(missing_ok=True)
+        raise
 
 
 def check_account() -> dict[str, Any]:

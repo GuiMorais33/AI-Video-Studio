@@ -337,8 +337,7 @@ def create_app(
 
     @app.post("/kaggle/token")
     def kaggle_token(body: KaggleTokenIn) -> dict[str, Any]:
-        kaggle_remote.save_token(body.token)
-        return kaggle_remote.check_account()
+        return kaggle_remote.save_and_check_token(body.token)
 
     @app.post("/projects/{project_id}/kaggle", status_code=202)
     def kaggle_run(project_id: str) -> dict[str, Any]:
