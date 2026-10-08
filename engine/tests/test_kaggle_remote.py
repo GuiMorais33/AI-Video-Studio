@@ -14,45 +14,68 @@ import pytest
 from studio import kaggle_remote
 
 
+OK = SimpleNamespace(status="ok", error="")
+
+
 class FakeApi:
-    def __init__(self, final_status="COMPLETE", produce_result=True, dataset_exists=False):
+    def __init__(self, final_status="COMPLETE", produce_result=True, dataset_exists=False,
+                 statuses=None, stale=False, dataset_error=""):
         self.final_status = final_status
         self.produce_result = produce_result
         self.dataset_exists = dataset_exists
+        self.statuses = statuses  # sequência de status a devolver (padrão: 2x RUNNING e o final)
+        self.stale = stale  # devolve a saída de uma execução anterior
+        self.dataset_error = dataset_error
         self.calls: list[tuple] = []
         self.status_calls = 0
         self.pushed_metadata: dict = {}
         self.uploaded: list[str] = []
+        self.run_id = None
+        self.version = 3 if dataset_exists else 0
+        self.uploads = 0
+        self.status_polls_after_upload = 0
 
-    def dataset_status(self, dataset_id):
+    def dataset_status(self, dataset_id, format=None):
         self.calls.append(("dataset_status", dataset_id))
         if not self.dataset_exists:
             raise RuntimeError("404")
-        return "ready"
+        assert format and format.startswith("json")
+        # Logo após o envio, o Kaggle ainda mostra a versão anterior por uma consulta.
+        self.status_polls_after_upload += 1
+        version = self.version + (1 if self.uploads and self.status_polls_after_upload > 1 else 0)
+        return json.dumps({"status": "ready", "current_version_number": version})
 
     def _upload(self, folder):
         self.uploaded = sorted(os.listdir(folder))
         meta = json.loads(Path(folder, "dataset-metadata.json").read_text())
         assert meta["id"].startswith("maria/aivs-")
+        self.run_id = json.loads(Path(folder, "aivs_run.json").read_text())["run_id"]
         self.dataset_exists = True
+        self.uploads += 1
+        self.status_polls_after_upload = 0
+        if self.dataset_error:
+            return SimpleNamespace(status="error", error=self.dataset_error)
+        return OK
 
     def dataset_create_new(self, folder, public=False, quiet=False, dir_mode="skip"):
         assert public is False
         self.calls.append(("create_new",))
-        self._upload(folder)
+        return self._upload(folder)
 
     def dataset_create_version(self, folder, version_notes, quiet=False, dir_mode="skip"):
         self.calls.append(("create_version",))
-        self._upload(folder)
+        return self._upload(folder)
 
     def kernels_push(self, folder, timeout=None):
         self.pushed_metadata = json.loads(Path(folder, "kernel-metadata.json").read_text())
         assert Path(folder, self.pushed_metadata["code_file"]).exists()
         self.calls.append(("push", timeout))
+        return SimpleNamespace(error=None, invalidDatasetSources=[], versionNumber=7, url="u")
 
     def kernels_status(self, kernel_id):
         self.status_calls += 1
-        status = "RUNNING" if self.status_calls < 3 else self.final_status
+        sequence = self.statuses or ["RUNNING", "RUNNING", self.final_status]
+        status = sequence[min(self.status_calls, len(sequence)) - 1]
         return SimpleNamespace(status=SimpleNamespace(name=status), failure_message=None)
 
     def kernels_logs(self, kernel_id):
@@ -60,7 +83,7 @@ class FakeApi:
 
     def kernels_output(self, kernel_id, path, force=False, quiet=True):
         out = Path(path)
-        report = {"etapas": {"geracao_s": 123}}
+        report = {"etapas": {"geracao_s": 123}, "run_id": "outro" if self.stale else self.run_id}
         if self.final_status != "COMPLETE":
             report["erro"] = "CUDA out of memory"
         (out / "relatorio.json").write_text(json.dumps(report))
@@ -102,7 +125,7 @@ def test_run_on_kaggle_success(monkeypatch, project_root):
     assert message.startswith("Resultado importado")
     assert imported == [b"fake mp4"]
     assert ("create_new",) in api.calls
-    assert api.uploaded == ["dataset-metadata.json", "wan_package.zip"]
+    assert api.uploaded == ["aivs_run.json", "dataset-metadata.json", "wan_package.zip"]
     meta = api.pushed_metadata
     assert meta["id"] == "maria/ai-video-studio-wan-animate"
     assert meta["dataset_sources"] == ["maria/aivs-abc123"]
@@ -153,7 +176,7 @@ def test_calls_match_installed_kaggle_api():
     expected = {
         "authenticate": [],
         "get_config_value": ["name"],
-        "dataset_status": ["dataset"],
+        "dataset_status": ["dataset", "format"],
         "dataset_create_new": ["folder", "public", "quiet", "dir_mode"],
         "dataset_create_version": ["folder", "version_notes", "quiet", "dir_mode"],
         "kernels_push": ["folder", "timeout"],
@@ -165,3 +188,42 @@ def test_calls_match_installed_kaggle_api():
     for name, params in expected.items():
         signature = inspect.signature(getattr(api, name))
         assert set(params) <= set(signature.parameters), (name, signature)
+
+
+def test_waits_for_new_run_before_accepting_complete(monkeypatch, project_root):
+    """Logo após o envio, o status ainda é o "COMPLETE" da execução anterior."""
+    root, notebook = project_root
+    api = FakeApi(statuses=["COMPLETE", "QUEUED", "RUNNING", "COMPLETE"])
+    _patch(monkeypatch, api)
+    kaggle_remote.run_on_kaggle({"id": "abc123"}, root, lambda *a: None, lambda p: "ok", notebook=notebook)
+    assert api.status_calls == 4
+
+
+def test_rejects_output_from_another_run(monkeypatch, project_root):
+    root, notebook = project_root
+    api = FakeApi(stale=True)
+    _patch(monkeypatch, api)
+    imported = []
+    with pytest.raises(kaggle_remote.KaggleError, match="outra execução"):
+        kaggle_remote.run_on_kaggle({"id": "abc123"}, root, lambda *a: None, imported.append, notebook=notebook)
+    assert imported == []
+
+
+def test_dataset_errors_inside_response_are_raised(monkeypatch, project_root):
+    root, notebook = project_root
+    api = FakeApi(dataset_error="Quota exceeded")
+    _patch(monkeypatch, api)
+    with pytest.raises(kaggle_remote.KaggleError, match="Quota exceeded"):
+        kaggle_remote.run_on_kaggle({"id": "abc123"}, root, lambda *a: None, lambda p: "", notebook=notebook)
+    assert not any(c[0] == "push" for c in api.calls)
+
+
+def test_waits_for_new_dataset_version(monkeypatch, project_root):
+    root, notebook = project_root
+    api = FakeApi(dataset_exists=True)
+    _patch(monkeypatch, api)
+    kaggle_remote.run_on_kaggle({"id": "abc123"}, root, lambda *a: None, lambda p: "ok", notebook=notebook)
+    status_checks = [c for c in api.calls if c[0] == "dataset_status"]
+    push_index = next(i for i, c in enumerate(api.calls) if c[0] == "push")
+    assert len([c for c in api.calls[:push_index] if c[0] == "dataset_status"]) >= 3  # antes, envio, 2 esperas
+    assert status_checks

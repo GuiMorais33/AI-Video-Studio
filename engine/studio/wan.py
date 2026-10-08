@@ -29,6 +29,11 @@ PACKAGE_FORMAT = 1
 RESOLUTIONS = {"480p": 832 * 480, "720p": 1280 * 720}
 WAN_FILES = ("wan_package.zip", "wan_input.mp4", "wan_result.mp4", "wan_final.mp4", "comparativo.mp4")
 MAX_REFERENCE_BYTES = 25 * 1024 * 1024
+# O Wan Animate gera em segmentos de 77 quadros (o 1º quadro de cada segmento seguinte repete o
+# último do anterior). Poucos quadros além de um segmento custam um segmento inteiro a mais.
+SEGMENT_FRAMES = 77
+SEGMENT_OVERLAP = 1
+MAX_TRIM_FRAMES = 8
 
 
 class WanError(ValueError):
@@ -69,6 +74,16 @@ def frame_indices(num_frames: int, src_fps: Fraction, dst_fps: Fraction) -> list
         return list(range(num_frames))
     count = max(1, int(num_frames / src_fps * dst_fps))
     return [min(num_frames - 1, round(i / dst_fps * src_fps)) for i in range(count)]
+
+
+def fit_segments(count: int, segment: int = SEGMENT_FRAMES, overlap: int = SEGMENT_OVERLAP,
+                 max_trim: int = MAX_TRIM_FRAMES) -> int:
+    """Quantos quadros manter: corta sobras de até `max_trim` que exigiriam um segmento extra
+    (na T4 isso dobraria o tempo de geração por fração de segundo de vídeo)."""
+    if count <= segment:
+        return count
+    excess = (count - segment) % (segment - overlap)
+    return count - excess if 0 < excess <= max_trim else count
 
 
 def _fit(img: Image.Image, geo: Geometry, resample: Image.Resampling) -> Image.Image:
@@ -128,6 +143,9 @@ def build_package(
     src_fps = Fraction(project["fps"])
     dst_fps = src_fps if not fps or Fraction(fps).limit_denominator(1001) >= src_fps else Fraction(fps).limit_denominator(1001)
     indices = frame_indices(total, src_fps, dst_fps)
+    kept = fit_segments(len(indices))
+    trimmed = len(indices) - kept
+    indices = indices[:kept]
     geo = wan_geometry(project["width"], project["height"], RESOLUTIONS[resolution])
 
     exports.mkdir(parents=True, exist_ok=True)
@@ -167,6 +185,7 @@ def build_package(
             "geometry": asdict(geo),
             "prompt": prompt.strip(),
             "empty_mask_frames": empty,
+            "trimmed_frames": trimmed,
             "files": {"video": "video.mp4", "masks": "masks/%05d.png", "reference": "reference.png"},
         }
         package = tmp / "wan_package.zip"
@@ -178,7 +197,8 @@ def build_package(
             zf.writestr("job.json", json.dumps(job, indent=2, ensure_ascii=False))
         os.replace(tmp / "video.mp4", exports / "wan_input.mp4")
         os.replace(package, exports / "wan_package.zip")
-    return f"Pacote pronto: {len(indices)} quadros {geo.width}x{geo.height} @ {float(dst_fps):.2f} fps."
+    note = f" ({trimmed} quadro(s) finais cortados para caber nos segmentos de {SEGMENT_FRAMES} do Wan)" if trimmed else ""
+    return f"Pacote pronto: {len(indices)} quadros {geo.width}x{geo.height} @ {float(dst_fps):.2f} fps{note}."
 
 
 def import_result(project: dict[str, Any], root: Path, upload: Path) -> str:

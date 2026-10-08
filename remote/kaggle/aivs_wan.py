@@ -70,6 +70,8 @@ class Config:
     prev_segment_frames: int = 1
     dtype: str = "float16"
     offload: bool = True
+    # Decodifica o VAE em blocos sobrepostos: evita estourar a VRAM no fim da geração.
+    vae_tiling: bool = True
     # Máscara (iguais ao pré-processamento oficial; bloco = template ComfyUI)
     mask_kernel: int = 7
     mask_iterations: int = 3
@@ -397,6 +399,8 @@ def build_pipeline(cfg: Config, device: str, cache: Path, report: Report):
         gguf, config=cfg.repo, subfolder="transformer", quantization_config=qcfg, torch_dtype=dtype
     )
     vae = AutoencoderKLWan.from_pretrained(cfg.repo, subfolder="vae", torch_dtype=torch.float32)
+    if cfg.vae_tiling:
+        vae.enable_tiling()
     pipe = WanAnimatePipeline.from_pretrained(
         cfg.repo, transformer=transformer, vae=vae, text_encoder=None, tokenizer=None, torch_dtype=dtype
     )
@@ -524,6 +528,9 @@ def main(cfg: Config | None = None) -> dict:
             report.data["ambiente"] = environment()
             progress(0.01, "Ambiente verificado")
         with report.etapa("pacote"):
+            run_file = next(Path(cfg.input_root).rglob("aivs_run.json"), None)
+            if run_file is not None:  # enviado pelo estúdio: identifica esta execução
+                report.data["run_id"] = json.loads(run_file.read_text()).get("run_id")
             job_dir = find_package(Path(cfg.input_root), scratch)
             job, frames, masks, reference = load_job(job_dir)
             report.data["job"] = {k: job[k] for k in ("project_id", "width", "height", "fps", "num_frames")}

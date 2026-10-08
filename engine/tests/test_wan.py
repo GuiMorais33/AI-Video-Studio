@@ -15,7 +15,7 @@ from PIL import Image
 from studio import media
 from studio.api import create_app
 from studio.projects import project_paths
-from studio.wan import WanError, frame_indices, save_reference, wan_geometry
+from studio.wan import WanError, fit_segments, frame_indices, save_reference, wan_geometry
 
 
 @pytest.mark.parametrize(
@@ -44,6 +44,14 @@ def test_frame_indices_resample():
     idx = frame_indices(150, Fraction(30), Fraction(16))
     assert len(idx) == 80 and idx[0] == 0 and idx[-1] <= 149
     assert all(b > a for a, b in zip(idx, idx[1:]))
+
+
+@pytest.mark.parametrize(
+    ("count", "expected"),
+    [(16, 16), (77, 77), (80, 77), (85, 77), (86, 86), (150, 150), (155, 153), (153, 153)],
+)
+def test_fit_segments_trims_small_overflow(count, expected):
+    assert fit_segments(count) == expected
 
 
 def test_save_reference_flattens_transparency(tmp_path):
@@ -112,7 +120,7 @@ def test_package_and_result_round_trip(settings, video, tmp_path):
         assert {"video.mp4", "reference.png", "job.json"} <= names
         assert (meta["width"], meta["height"], meta["fps"]) == (832, 464, "16/1")
         assert meta["num_frames"] == 16 and len(meta["source_frame_indices"]) == 16
-        assert meta["prompt"] == "robô" and meta["mode"] == "replace"
+        assert meta["prompt"] == "robô" and meta["mode"] == "replace" and meta["trimmed_frames"] == 0
         masks = sorted((tmp_path / "pkg" / "masks").glob("*.png"))
         assert len(masks) == meta["num_frames"]
         first = np.asarray(Image.open(masks[0]))

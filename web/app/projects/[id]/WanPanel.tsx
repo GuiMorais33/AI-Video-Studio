@@ -14,7 +14,7 @@ export function WanPanel({ project, locked, run }: Props) {
   const [refVersion, setRefVersion] = useState(0);
   const [resultVersion, setResultVersion] = useState(0);
   const [resolution, setResolution] = useState<"480p" | "720p">("480p");
-  const [fps, setFps] = useState<string>("original");
+  const [fps, setFps] = useState<string>("16");
   const [prompt, setPrompt] = useState("");
   const [kaggle, setKaggle] = useState<KaggleStatus | null>(null);
   const [kaggleUser, setKaggleUser] = useState<string | null>(null);
@@ -103,8 +103,8 @@ export function WanPanel({ project, locked, run }: Props) {
           <label>
             Quadros por segundo
             <select value={fps} onChange={(e) => setFps(e.target.value)}>
-              <option value="original">Original do clipe</option>
-              <option value="16">16 fps (gera mais rápido)</option>
+              <option value="16">16 fps (recomendado: 5 s cabem em 1 segmento)</option>
+              <option value="original">Original do clipe (até ~2x mais lento)</option>
             </select>
           </label>
           <label>

@@ -17,6 +17,7 @@ import re
 import shutil
 import tempfile
 import time
+import uuid
 from pathlib import Path
 from typing import Any, Callable
 
@@ -92,27 +93,41 @@ def _status_name(response: Any) -> str:
     return getattr(status, "name", str(status)).upper()
 
 
-def _wait_dataset(api, dataset_id: str, timeout: float = 600) -> None:
+ACTIVE = ("QUEUED", "RUNNING", "NEW_SCRIPT")
+TERMINAL = ("COMPLETE", "ERROR", "CANCEL_REQUESTED", "CANCEL_ACKNOWLEDGED")
+
+
+def _check(result: Any, what: str) -> Any:
+    """As chamadas da API devolvem o erro dentro da resposta em vez de lançar exceção."""
+    if result is None:
+        raise KaggleError(f"{what}: o Kaggle não respondeu.")
+    error = getattr(result, "error", None)
+    status = getattr(result, "status", None)
+    if error or (isinstance(status, str) and status and status.lower() != "ok"):
+        raise KaggleError(f"{what}: {error or status}")
+    return result
+
+
+def _dataset_state(api, dataset_id: str) -> tuple[str, int]:
+    """(status, versão atual) do dataset; ("missing", 0) se ainda não existe."""
+    try:
+        data = json.loads(api.dataset_status(dataset_id, format="json(status,current_version_number)"))
+    except Exception:
+        return "missing", 0
+    return str(data.get("status", "")).lower(), int(data.get("current_version_number") or 0)
+
+
+def _wait_dataset(api, dataset_id: str, after_version: int, timeout: float = 900) -> None:
+    """Espera a versão NOVA ficar pronta (logo após o envio, o status ainda é o da anterior)."""
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        try:
-            status = str(api.dataset_status(dataset_id)).lower()
-        except Exception:
-            status = "pending"
-        if status == "ready":
-            return
+        status, version = _dataset_state(api, dataset_id)
         if status == "error":
             raise KaggleError(f"O Kaggle rejeitou o dataset {dataset_id}.")
+        if status == "ready" and version > after_version:
+            return
         time.sleep(5)
     raise KaggleError("O dataset demorou demais para ficar pronto no Kaggle.")
-
-
-def _dataset_exists(api, dataset_id: str) -> bool:
-    try:
-        api.dataset_status(dataset_id)
-        return True
-    except Exception:
-        return False
 
 
 def run_on_kaggle(
@@ -137,17 +152,23 @@ def run_on_kaggle(
         data_dir = tmp / "dataset"
         data_dir.mkdir()
         shutil.copyfile(package, data_dir / "wan_package.zip")
+        # Identifica esta execução: o notebook copia para o relatorio.json e conferimos na volta.
+        run_id = uuid.uuid4().hex
+        (data_dir / "aivs_run.json").write_text(json.dumps({"run_id": run_id, "project_id": project["id"]}))
         (data_dir / "dataset-metadata.json").write_text(json.dumps({
             "title": dataset_slug,
             "id": dataset_id,
             "licenses": [{"name": "CC0-1.0"}],
         }))
         progress(0.02, "Enviando o pacote ao Kaggle (dataset privado)")
-        if _dataset_exists(api, dataset_id):
-            api.dataset_create_version(str(data_dir), version_notes="AI Video Studio", quiet=True, dir_mode="skip")
+        state, version = _dataset_state(api, dataset_id)
+        if state != "missing":
+            _check(api.dataset_create_version(str(data_dir), version_notes="AI Video Studio", quiet=True,
+                                              dir_mode="skip"), "Envio do pacote")
         else:
-            api.dataset_create_new(str(data_dir), public=False, quiet=True, dir_mode="skip")
-        _wait_dataset(api, dataset_id)
+            _check(api.dataset_create_new(str(data_dir), public=False, quiet=True, dir_mode="skip"),
+                   "Envio do pacote")
+        _wait_dataset(api, dataset_id, after_version=version)
 
         kernel_dir = tmp / "kernel"
         kernel_dir.mkdir()
@@ -168,13 +189,18 @@ def run_on_kaggle(
             "model_sources": [],
         }, indent=2))
         progress(0.05, "Iniciando o notebook na GPU T4 do Kaggle")
-        api.kernels_push(str(kernel_dir), timeout=str(MAX_WAIT_SECONDS))
+        pushed = _check(api.kernels_push(str(kernel_dir), timeout=str(MAX_WAIT_SECONDS)), "Envio do notebook")
+        if getattr(pushed, "invalidDatasetSources", None):
+            raise KaggleError(f"O Kaggle não anexou o pacote ao notebook: {pushed.invalidDatasetSources}")
 
         started = time.monotonic()
         last_fraction = 0.05
+        seen_active, polls = False, 0
         while True:
             time.sleep(POLL_SECONDS)
+            polls += 1
             status = _status_name(api.kernels_status(kernel_id))
+            seen_active = seen_active or status in ACTIVE
             message = None
             try:
                 matches = PROGRESS_RE.findall(api.kernels_logs(kernel_id) or "")
@@ -185,7 +211,9 @@ def run_on_kaggle(
                 last_fraction = max(last_fraction, 0.05 + 0.85 * min(1.0, float(value)))
             minutes = int((time.monotonic() - started) / 60)
             progress(last_fraction, f"Kaggle: {status.lower()} ({minutes} min){' · ' + message if message else ''}")
-            if status in ("COMPLETE", "ERROR", "CANCEL_REQUESTED", "CANCEL_ACKNOWLEDGED"):
+            # Logo após o envio o status ainda pode ser o da execução anterior: só aceita o fim
+            # depois de ver a nova versão na fila/rodando (ou após alguns minutos).
+            if status in TERMINAL and (seen_active or polls >= 6):
                 break
             if time.monotonic() - started > MAX_WAIT_SECONDS:
                 raise KaggleError("O notebook passou de 12 h sem terminar.")
@@ -197,10 +225,14 @@ def run_on_kaggle(
         except Exception:
             pass
         report = next(out_dir.rglob("relatorio.json"), None)
+        report_data = json.loads(report.read_text()) if report is not None else {}
+        if report is not None and report_data.get("run_id") != run_id:
+            raise KaggleError(
+                "O Kaggle devolveu a saída de outra execução (relatório de outro envio). "
+                f"Tente de novo ou confira https://www.kaggle.com/code/{kernel_id}"
+            )
         if status != "COMPLETE":
-            detail = ""
-            if report is not None:
-                detail = json.loads(report.read_text()).get("erro", "")
+            detail = report_data.get("erro", "")
             raise KaggleError(
                 f"O notebook terminou com status {status.lower()}. {detail} "
                 f"Veja o log em https://www.kaggle.com/code/{kernel_id}"
