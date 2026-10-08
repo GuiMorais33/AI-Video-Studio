@@ -4,9 +4,13 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=scripts/node-env.sh
+source "$ROOT/scripts/node-env.sh"
+use_vendored_node
 STUDIO="$ROOT/engine/.venv/bin/studio"
 [[ -x "$STUDIO" ]] || { echo "Motor não instalado. Rode: bash scripts/setup.sh" >&2; exit 1; }
-[[ -d "$ROOT/web/node_modules" ]] || { echo "Painel não instalado. Rode: npm --prefix web install" >&2; exit 1; }
+node_ok || { echo "Node.js 20+ não encontrado. Rode: bash scripts/setup.sh" >&2; exit 1; }
+[[ -d "$ROOT/web/node_modules" ]] || { echo "Painel não instalado. Rode: bash scripts/setup.sh" >&2; exit 1; }
 
 "$STUDIO" serve --host 127.0.0.1 --port 8765 &
 ENGINE_PID=$!

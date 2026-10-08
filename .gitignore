@@ -27,3 +27,6 @@ Thumbs.db
 
 # Código de terceiros baixado pelo setup (SAM 2 oficial)
 /engine/.vendor/
+
+# Node.js baixado pelo setup quando o do sistema é antigo
+/.vendor/

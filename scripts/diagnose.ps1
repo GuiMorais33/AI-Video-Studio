@@ -104,7 +104,7 @@ if (-not $wsl) {
     Show-Line "WSL" "nao instalado"
     $tips.Add("Instale o WSL2 com Ubuntu (PowerShell como administrador): wsl --install -d Ubuntu  e reinicie o PC.")
 } else {
-    $list = & wsl.exe -l -v 2>&1 | ForEach-Object { ("" + $_).Replace([char]0, "").Trim() } | Where-Object { $_ }
+    $list = & wsl.exe -l -v 2>&1 | ForEach-Object { ("" + $_).Replace([string][char]0, "").Trim() } | Where-Object { $_ }
     $distros = @()
     foreach ($line in $list) {
         # Linhas de distribuicao terminam com a versao do WSL (1 ou 2); cabecalho e avisos sao ignorados.

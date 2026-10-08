@@ -7,10 +7,13 @@
 #   SAM2_MODEL=small bash scripts/setup.sh
 #
 # Tudo fica dentro da pasta do projeto: engine/.venv (Python), engine/.vendor/sam2
-# (código oficial da Meta) e data/models (checkpoints). Nada é pago nem enviado.
+# (código oficial da Meta), .vendor/node (Node.js, se o do sistema for antigo) e
+# data/models (checkpoints). Nada é pago nem enviado.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=scripts/node-env.sh
+source "$ROOT/scripts/node-env.sh"
 VENV="$ROOT/engine/.venv"
 SAM2_DIR="$ROOT/engine/.vendor/sam2"
 # Commit fixo do repositório oficial facebookresearch/sam2 (SAM 2.1, dez/2024).
@@ -21,22 +24,33 @@ SAM2_MODEL="${SAM2_MODEL:-tiny}"
 step() { printf '\n==> %s\n' "$*"; }
 fail() { printf '\nERRO: %s\n' "$*" >&2; exit 1; }
 
+APT_PACKAGES=(python3 python3-venv python3-pip git ffmpeg curl xz-utils)
+
+missing_tools() {
+  local cmd
+  for cmd in python3 git ffmpeg ffprobe curl xz; do
+    command -v "$cmd" >/dev/null || printf '%s ' "$cmd"
+  done
+  python3 -c "import venv, ensurepip" 2>/dev/null || printf 'python3-venv '
+}
+
 step "Verificando ferramentas do sistema"
-missing=()
-for cmd in python3 git ffmpeg ffprobe; do
-  command -v "$cmd" >/dev/null || missing+=("$cmd")
-done
-if ((${#missing[@]})); then
-  fail "faltando: ${missing[*]}
+missing="$(missing_tools)"
+if [[ -n "$missing" ]] && command -v apt-get >/dev/null; then
+  echo "Faltando: $missing— instalando com apt (pode pedir a sua senha do Ubuntu)."
+  sudo apt-get update
+  sudo apt-get install -y "${APT_PACKAGES[@]}"
+  missing="$(missing_tools)"
+fi
+if [[ -n "$missing" ]]; then
+  fail "faltando: $missing
 No Ubuntu/WSL instale com:
-  sudo apt update && sudo apt install -y python3 python3-venv python3-pip git ffmpeg"
+  sudo apt update && sudo apt install -y ${APT_PACKAGES[*]}"
 fi
 python3 - <<'PY' || fail "é necessário Python 3.10 ou mais novo"
 import sys
 sys.exit(0 if sys.version_info >= (3, 10) else 1)
 PY
-python3 -c "import venv, ensurepip" 2>/dev/null \
-  || fail "módulo venv ausente. Instale com: sudo apt install -y python3-venv"
 
 step "Criando ambiente Python em engine/.venv"
 [[ -x "$VENV/bin/python" ]] || python3 -m venv "$VENV"
@@ -71,11 +85,12 @@ step "Instalando o motor do AI Video Studio"
 step "Baixando checkpoint SAM 2.1 ($SAM2_MODEL)"
 "$VENV/bin/studio" models download --model "$SAM2_MODEL"
 
-if command -v npm >/dev/null; then
-  step "Instalando dependências do painel web"
-  npm --prefix "$ROOT/web" install --no-fund --no-audit
+step "Preparando Node.js 20+ e o painel web"
+if ensure_node; then
+  echo "Node.js $(node --version)"
+  npm --prefix "$ROOT/web" ci --no-fund --no-audit
 else
-  printf '\nAviso: npm não encontrado; o painel web não foi instalado (Node.js 20+ necessário).\n'
+  printf '\nAviso: não foi possível preparar o Node.js 20+; o painel web não foi instalado.\n'
 fi
 
 step "Diagnóstico"
