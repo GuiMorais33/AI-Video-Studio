@@ -194,13 +194,23 @@ class Database:
         with self._connect() as conn:
             return _row(conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone())
 
-    def active_job(self, project_id: str) -> dict[str, Any] | None:
+    def active_job(
+        self, project_id: str | None, *, kinds: tuple[str, ...] | None = None, exclude: tuple[str, ...] = ()
+    ) -> dict[str, Any] | None:
+        """Tarefa em fila/execução do projeto (ou de qualquer projeto, se project_id for None)."""
+        sql = "SELECT * FROM jobs WHERE status IN ('queued', 'running')"
+        params: list[Any] = []
+        if project_id is not None:
+            sql += " AND project_id = ?"
+            params.append(project_id)
+        if kinds is not None:
+            sql += f" AND kind IN ({', '.join('?' for _ in kinds)})"
+            params.extend(kinds)
+        if exclude:
+            sql += f" AND kind NOT IN ({', '.join('?' for _ in exclude)})"
+            params.extend(exclude)
         with self._connect() as conn:
-            return _row(conn.execute(
-                "SELECT * FROM jobs WHERE project_id = ? AND status IN ('queued', 'running') "
-                "ORDER BY created_at DESC LIMIT 1",
-                (project_id,),
-            ).fetchone())
+            return _row(conn.execute(sql + " ORDER BY created_at DESC LIMIT 1", params).fetchone())
 
     def latest_jobs(self, project_id: str) -> dict[str, dict[str, Any]]:
         """Última tarefa de cada tipo para o projeto."""

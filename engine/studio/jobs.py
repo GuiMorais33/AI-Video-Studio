@@ -16,17 +16,34 @@ class JobConflict(RuntimeError):
     pass
 
 
+# Tarefas que só esperam um serviço remoto: rodam numa fila própria e não travam a edição.
+REMOTE_KINDS = ("kaggle",)
+
+
 class JobRunner:
-    def __init__(self, db: Database):
+    def __init__(self, db: Database, name: str = "studio-job"):
         self.db = db
         # Um único trabalhador: o modelo e a CPU não comportam duas tarefas pesadas ao mesmo tempo.
-        self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="studio-job")
+        self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix=name)
         self._submit_lock = threading.Lock()
 
-    def submit(self, project_id: str, kind: str, fn: Callable[[Callable[..., None]], str | None]) -> dict[str, Any]:
+    def submit(
+        self,
+        project_id: str,
+        kind: str,
+        fn: Callable[[Callable[..., None]], str | None],
+        conflict: Callable[[], str | None] | None = None,
+    ) -> dict[str, Any]:
+        """Enfileira `fn`. `conflict` devolve uma mensagem quando a tarefa não pode começar."""
         with self._submit_lock:
-            if self.db.active_job(project_id) is not None:
-                raise JobConflict("Já existe uma tarefa em andamento neste projeto.")
+            if conflict is not None:
+                reason = conflict()
+            elif self.db.active_job(project_id, exclude=REMOTE_KINDS) is not None:
+                reason = "Já existe uma tarefa em andamento neste projeto."
+            else:
+                reason = None
+            if reason:
+                raise JobConflict(reason)
             job = self.db.create_job(project_id, kind)
         self._pool.submit(self._run, job["id"], fn)
         return job

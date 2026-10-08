@@ -19,7 +19,8 @@ from pydantic import BaseModel, Field
 from . import __version__, diagnose
 from .config import MAX_CLIP_SECONDS, Settings
 from .db import Database
-from .jobs import JobConflict, JobRunner
+from .jobs import REMOTE_KINDS, JobConflict, JobRunner
+from . import kaggle_remote
 from .masks import load_mask, load_rgb, object_color, overlay
 from .media import MediaError
 from .models import checkpoint_path, get_model
@@ -39,6 +40,10 @@ def default_tracker_factory(settings: Settings) -> Callable[[], Tracker]:
         return Sam2Tracker(model.config, checkpoint_path(settings.models_dir, settings.sam2_model), settings.device)
 
     return factory
+
+
+class KaggleTokenIn(BaseModel):
+    token: str = Field(min_length=1, max_length=600)
 
 
 class WanPackageIn(BaseModel):
@@ -64,11 +69,13 @@ def create_app(
     db = Database(settings.db_path)
     session = TrackingSession(db, settings, tracker_factory or default_tracker_factory(settings))
     jobs = JobRunner(db)
+    remote_jobs = JobRunner(db, name="studio-remote")
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
         yield
         jobs.shutdown()
+        remote_jobs.shutdown()
 
     app = FastAPI(title="AI Video Studio — motor", version=__version__, lifespan=lifespan)
     app.add_middleware(
@@ -81,6 +88,7 @@ def create_app(
     app.state.db = db
     app.state.session = session
     app.state.jobs = jobs
+    app.state.remote_jobs = remote_jobs
 
     @app.exception_handler(TrackerError)
     async def tracker_error(_req: Request, exc: TrackerError):
@@ -88,6 +96,10 @@ def create_app(
 
     @app.exception_handler(WanError)
     async def wan_error(_req: Request, exc: WanError):
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+    @app.exception_handler(kaggle_remote.KaggleError)
+    async def kaggle_error(_req: Request, exc: kaggle_remote.KaggleError):
         return JSONResponse(status_code=400, content={"detail": str(exc)})
 
     @app.exception_handler(JobConflict)
@@ -100,8 +112,8 @@ def create_app(
             raise HTTPException(404, "Projeto não encontrado.")
         return project
 
-    def ensure_idle(project_id: str) -> None:
-        if db.active_job(project_id) is not None:
+    def ensure_idle(project_id: str, include_remote: bool = False) -> None:
+        if db.active_job(project_id, exclude=() if include_remote else REMOTE_KINDS) is not None:
             raise HTTPException(409, "Há uma tarefa em andamento neste projeto. Aguarde terminar.")
 
     def check_frame(project: dict[str, Any], idx: int) -> None:
@@ -114,7 +126,8 @@ def create_app(
             **project,
             "clicks": db.list_clicks(project["id"]),
             "objects": paths.obj_ids(),
-            "active_job": db.active_job(project["id"]),
+            "active_job": db.active_job(project["id"], exclude=REMOTE_KINDS),
+            "remote_job": db.active_job(project["id"], kinds=REMOTE_KINDS),
             "jobs": db.latest_jobs(project["id"]),
             "exports": {name: (paths.exports / name).exists() for name in EXPORT_FILES},
             "reference": (paths.root / "reference.png").exists(),
@@ -305,12 +318,56 @@ def create_app(
                 resolution=body.resolution, fps=body.fps, prompt=body.prompt, progress=progress,
             )
 
-        return jobs.submit(project_id, "wan_package", run)
+        def conflict() -> str | None:
+            if db.active_job(project_id, exclude=REMOTE_KINDS):
+                return "Já existe uma tarefa em andamento neste projeto."
+            if db.active_job(project_id, kinds=REMOTE_KINDS):
+                return "O Kaggle está usando o pacote atual. Aguarde a geração terminar."
+            return None
+
+        return jobs.submit(project_id, "wan_package", run, conflict=conflict)
+
+    @app.get("/kaggle")
+    def kaggle_status() -> dict[str, Any]:
+        return {
+            **kaggle_remote.token_status(),
+            "installed": importlib.util.find_spec("kaggle") is not None,
+            "running": db.active_job(None, kinds=REMOTE_KINDS),
+        }
+
+    @app.post("/kaggle/token")
+    def kaggle_token(body: KaggleTokenIn) -> dict[str, Any]:
+        kaggle_remote.save_token(body.token)
+        return kaggle_remote.check_account()
+
+    @app.post("/projects/{project_id}/kaggle", status_code=202)
+    def kaggle_run(project_id: str) -> dict[str, Any]:
+        get_project(project_id)
+        root = project_paths(settings, project_id).root
+
+        def conflict() -> str | None:
+            if db.active_job(None, kinds=REMOTE_KINDS):
+                return "Já há uma geração no Kaggle em andamento (um notebook por vez)."
+            if db.active_job(project_id, exclude=REMOTE_KINDS):
+                return "Aguarde a tarefa atual do projeto terminar."
+            if not kaggle_remote.token_status()["configured"]:
+                return "Configure o token do Kaggle primeiro."
+            if not (root / "exports" / "wan_package.zip").exists():
+                return "Gere o pacote do Wan antes de enviar ao Kaggle."
+            return None
+
+        def run(progress: Callable[..., None]) -> str:
+            return kaggle_remote.run_on_kaggle(
+                get_project(project_id), root, progress,
+                import_result=lambda path: import_result(get_project(project_id), root, path),
+            )
+
+        return remote_jobs.submit(project_id, "kaggle", run, conflict=conflict)
 
     @app.post("/projects/{project_id}/wan-result")
     def wan_result(project_id: str, file: UploadFile = File(...)) -> dict[str, Any]:
         project = get_project(project_id)
-        ensure_idle(project_id)
+        ensure_idle(project_id, include_remote=True)
         root = project_paths(settings, project_id).root
         tmp = save_upload(file, root)
         try:

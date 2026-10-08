@@ -80,7 +80,7 @@ git -C "$SAM2_DIR" checkout --quiet "$SAM2_COMMIT" 2>/dev/null \
 SAM2_BUILD_CUDA=0 "$PY" -m pip install --quiet --no-build-isolation -e "$SAM2_DIR"
 
 step "Instalando o motor do AI Video Studio"
-"$PY" -m pip install --quiet -e "$ROOT/engine[dev]"
+"$PY" -m pip install --quiet -e "$ROOT/engine[dev,kaggle]"
 
 step "Baixando checkpoint SAM 2.1 ($SAM2_MODEL)"
 "$VENV/bin/studio" models download --model "$SAM2_MODEL"

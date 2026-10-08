@@ -20,6 +20,8 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "httpx>=0.27"]
+# CLI/API oficial do Kaggle, para rodar o Wan Animate na GPU gratuita (versão validada).
+kaggle = ["kaggle==2.2.4"]
 
 [project.scripts]
 studio = "studio.cli:main"
