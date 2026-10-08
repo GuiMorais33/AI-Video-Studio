@@ -25,44 +25,53 @@ O roteiro completo e o que foi revisado no plano original estão em
 > Use apenas vídeos e rostos seus ou de quem autorizou. Veja [docs/LICENCAS.md](docs/LICENCAS.md)
 > antes de usar em publicidade.
 
-## Instalação no Windows (via WSL2)
+## Instalação no Windows (um clique)
 
-A Meta recomenda rodar o SAM 2 no WSL com Ubuntu. O navegador continua sendo o do Windows.
+O estúdio roda no Ubuntu dentro do WSL2, como a Meta recomenda para o SAM 2. Você continua usando
+o navegador do Windows.
 
-1. **Diagnóstico do Windows.** No PowerShell, dentro da pasta do projeto:
+1. Abra o **PowerShell** (normal, não precisa ser administrador) e cole:
    ```powershell
-   powershell -ExecutionPolicy Bypass -File scripts\diagnose.ps1
+   irm https://raw.githubusercontent.com/GuiMorais33/AI-Video-Studio/HEAD/scripts/instalar-windows.ps1 -OutFile $env:TEMP\instalar-aivs.ps1
+   powershell -ExecutionPolicy Bypass -File $env:TEMP\instalar-aivs.ps1
    ```
-   O script só lê informações. Ele aponta o que falta (WSL, virtualização, memória, GPU).
-2. **WSL2 + Ubuntu.** Se ainda não tiver, abra o PowerShell **como administrador**, rode o comando
-   abaixo e reinicie o PC:
-   ```powershell
-   wsl --install -d Ubuntu
-   ```
-3. **Dentro do Ubuntu:**
-   ```bash
-   sudo apt update && sudo apt install -y python3 python3-venv python3-pip git ffmpeg
-   # Node.js 20+ para o painel (ex.: via nvm ou https://nodejs.org)
-   git clone https://github.com/GuiMorais33/AI-Video-Studio.git ~/AI-Video-Studio
-   cd ~/AI-Video-Studio
-   bash scripts/setup.sh
-   ```
-   Clone em `~/`, não em `/mnt/c/...`: o disco do Windows visto pelo WSL é bem mais lento.
+2. Responda ao que o instalador pedir:
+   - **permissão de administrador e reinício:** só se o WSL ainda não estiver instalado. Depois de
+     reiniciar, rode os mesmos comandos de novo;
+   - **usuário e senha do Ubuntu:** só na primeira vez. Guarde a senha;
+   - **senha do Ubuntu (`[sudo] password`):** para instalar Python, FFmpeg etc. Ela não aparece
+     enquanto você digita.
+3. No fim aparece o atalho **AI Video Studio** na Área de Trabalho. Ele sobe o estúdio e abre
+   <http://localhost:3000> sozinho.
 
-   O `setup.sh` faz o seguinte:
-   - cria `engine/.venv`;
-   - instala o PyTorch (só-CPU se não houver GPU NVIDIA);
-   - instala o SAM 2 oficial da Meta numa versão fixa;
-   - baixa o checkpoint **SAM 2.1 Tiny** (~156 MB);
-   - instala o painel;
-   - roda o diagnóstico.
-4. **Abrir o estúdio:**
-   ```bash
-   bash scripts/start.sh
-   ```
-   Acesse <http://localhost:3000> no navegador do Windows.
+O instalador:
 
-Linux nativo: mesmos passos do item 3.
+- instala o WSL2 com Ubuntu, se faltar;
+- baixa o projeto em `~/AI-Video-Studio` dentro do Ubuntu;
+- roda `scripts/setup.sh`, que:
+  - cria `engine/.venv`;
+  - instala o PyTorch (só-CPU se não houver GPU NVIDIA);
+  - instala o SAM 2 oficial da Meta numa versão fixa;
+  - baixa o checkpoint **SAM 2.1 Tiny** (~156 MB);
+  - instala o Node.js 22 se o do sistema for antigo;
+  - instala o painel;
+  - roda o diagnóstico;
+- cria o atalho na Área de Trabalho.
+
+Pode rodar o instalador de novo a qualquer momento: ele continua de onde parou e atualiza o projeto.
+
+**Diagnóstico sem instalar nada.** Com o projeto baixado, rode no PowerShell:
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\diagnose.ps1
+```
+
+**Linux nativo ou instalação manual no Ubuntu:**
+```bash
+git clone https://github.com/GuiMorais33/AI-Video-Studio.git ~/AI-Video-Studio
+cd ~/AI-Video-Studio && bash scripts/setup.sh   # instala via apt o que faltar
+bash scripts/start.sh                           # http://localhost:3000
+```
+Clone em `~/`, não em `/mnt/c/...`: o disco do Windows visto pelo WSL é bem mais lento.
 
 ## Uso
 
@@ -119,7 +128,7 @@ engine/            Motor Python (FastAPI + SQLite + SAM 2.1 + FFmpeg)
     diagnose.py    Diagnóstico de hardware/software
   tests/           pytest (inclui teste com o SAM 2 real, se instalado)
 web/               Painel Next.js
-scripts/           setup.sh, start.sh, diagnose.ps1
+scripts/           instalar-windows.ps1, setup.sh, start.sh, node-env.sh, diagnose.ps1
 docs/              Roteiro, avaliação do plano, licenças
 data/              (gerado) projetos, studio.db, modelos — fora do Git
 ```

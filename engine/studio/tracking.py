@@ -14,6 +14,8 @@ from typing import Callable, Sequence
 import numpy as np
 from PIL import Image
 
+from .masks import anchor_points
+
 FrameCallback = Callable[[int, dict[int, np.ndarray]], None]
 
 
@@ -93,6 +95,8 @@ class Sam2Tracker(Tracker):
             config, str(checkpoint) if checkpoint is not None else None, device=dev
         )
         self._state = None
+        # Máscaras usadas como ponto de partida (add_mask), por (quadro, objeto).
+        self._seeds: dict[tuple[int, int], np.ndarray] = {}
 
     def _require_state(self):
         if self._state is None:
@@ -101,23 +105,36 @@ class Sam2Tracker(Tracker):
 
     def load_video(self, frames_dir: Path) -> None:
         self._state = None  # libera a memória do vídeo anterior antes de carregar o novo
+        self._seeds = {}
         self._state = self._predictor.init_state(
             video_path=str(frames_dir), offload_video_to_cpu=True, async_loading_frames=False
         )
 
     def reset(self) -> None:
         self._predictor.reset_state(self._require_state())
+        self._seeds = {}
 
     def unload(self) -> None:
         self._state = None
+        self._seeds = {}
 
     def add_mask(self, frame_idx: int, obj_id: int, mask: np.ndarray) -> None:
+        mask = np.asarray(mask, dtype=bool)
         self._predictor.add_new_mask(
-            inference_state=self._require_state(), frame_idx=frame_idx, obj_id=obj_id,
-            mask=np.asarray(mask, dtype=bool),
+            inference_state=self._require_state(), frame_idx=frame_idx, obj_id=obj_id, mask=mask,
         )
+        self._seeds[(frame_idx, obj_id)] = mask
 
     def add_points(self, frame_idx, obj_id, points, labels) -> np.ndarray:
+        points, labels = list(points), list(labels)
+        seed = self._seeds.get((frame_idx, obj_id))
+        if seed is not None:
+            # Com a máscara anterior só como "dica", um clique de exclusão sozinho faz o SAM
+            # devolver máscara vazia (medido com vídeo real). Âncoras positivas tiradas do
+            # miolo da máscara anterior dizem "continua sendo este objeto, menos aqui".
+            negatives = [p for p, label in zip(points, labels) if label == 0]
+            anchors = anchor_points(seed, avoid=negatives)
+            points, labels = anchors + points, [1] * len(anchors) + labels
         _, obj_ids, logits = self._predictor.add_new_points_or_box(
             inference_state=self._require_state(),
             frame_idx=frame_idx,

@@ -10,7 +10,7 @@ relação ao plano original são duas. O teste do Wan Animate veio para a Fase 3
 | Fase | Entrega | Critério de conclusão | Status |
 |---|---|---|---|
 | 1. Ambiente | Estrutura do projeto, instalador, diagnóstico de hardware | `scripts/diagnose.ps1` e `studio diagnose` rodam no PC do usuário | Código pronto; falta rodar no Windows do usuário |
-| 2. SAM 2.1 | Selecionar pessoa com clique, rastrear, corrigir, exportar prévia | Rastrear uma pessoa por 5 s e corrigir as máscaras, com vídeo real | Código pronto e testado contra o SAM 2 oficial (pesos aleatórios); **falta validar a qualidade com os pesos reais num vídeo real** |
+| 2. SAM 2.1 | Selecionar pessoa com clique, rastrear, corrigir, exportar prévia | Rastrear uma pessoa por 5 s e corrigir as máscaras, com vídeo real | **Validada com pesos reais em 2 vídeos reais** (ver abaixo); vale repetir com um vídeo seu |
 | 3. Teste do Wan Animate | Notebook Kaggle que roda o Wan 2.2 Animate (replacement) via ComfyUI sem interface, usando nossas máscaras | Um clipe de 3–5 s com personagem substituído, gerado sem custo; tempo e qualidade anotados | A fazer |
 | 4. Integração | Envio do clipe + máscara + referência do ChatGPT para o Kaggle e retorno do resultado ao estúdio | Fluxo de ponta a ponta disparado pelo estúdio | A fazer, se a Fase 3 passar |
 | 5. Refinamento | Composição com bordas suaves, ajuste de cor, upscale para 1080×1920, áudio original | Vídeo final pronto para Reels com comparativo antes/depois | A fazer |
@@ -30,6 +30,28 @@ relação ao plano original são duas. O teste do Wan Animate veio para a Fase 3
    novo e exportar.
 5. Anotar o tempo por quadro que o comando imprime: é a medida de desempenho da CPU.
 
+### Validação com pesos reais (out/2026)
+
+Feita no ambiente de nuvem do Claude Code com o checkpoint SAM 2.1 Tiny. Os sites da Meta e do
+Hugging Face estavam bloqueados ali. Foi usada a cópia em meia precisão publicada pela Ultralytics
+no GitHub; as 471 camadas são idênticas às do modelo oficial.
+
+**Vídeo vertical de 5 s (mulher dançando de capa amarela)**
+- 3 cliques no quadro 0.
+- A máscara acompanhou a pessoa nos 120 quadros: giros, cabelo voando, braços para cima, dedos.
+
+**Vídeo de demonstração oficial do SAM 2 (duas crianças pulando na cama)**
+- 2 cliques na menina.
+- Ela foi rastreada nos 200 quadros e o menino ficou de fora.
+
+**Correção**
+- Um clique de exclusão num quadro já rastreado tira só a região clicada (ex.: a saia).
+- Um clique de inclusão devolve uma parte que faltava (ex.: um braço) e mantém 99–100% do resto.
+- Desfazer restaura a máscara exata.
+- Esse teste revelou um problema: depois de reiniciar o motor, um clique de exclusão sozinho fazia o
+  SAM apagar a máscara inteira. Agora o rastreador acrescenta pontos-âncora tirados do miolo da
+  máscara anterior.
+
 ### Desempenho medido (CPU, sem GPU)
 
 SAM 2.1 Tiny, Xeon de 4 threads, clipe de 5 s em 854×480 (150 quadros):
@@ -39,7 +61,7 @@ SAM 2.1 Tiny, Xeon de 4 threads, clipe de 5 s em 854×480 (150 quadros):
 | Preparar o clipe | 1,4 s |
 | Primeiro clique (carrega os quadros) | 4,7 s |
 | Cliques seguintes | menos de 0,1 s |
-| Rastreamento | 2,2 s por quadro, cerca de 5,6 min no total |
+| Rastreamento | 2,2 a 2,9 s por quadro, cerca de 5,6 min no total |
 | Exportação | 2 s |
 
 Pico de RAM: 3,2 GB.
