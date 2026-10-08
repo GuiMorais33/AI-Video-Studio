@@ -143,3 +143,13 @@ cd web && npm run typecheck && npm run build
 
 `tests/test_sam2_integration.py` roda o SAM 2.1 oficial de ponta a ponta. Ele usa pesos aleatórios
 e verifica o encanamento, não a qualidade. Se o SAM 2 não estiver instalado, o teste é pulado.
+
+O aviso `cannot import name '_C' from 'sam2'` é esperado. Ele significa que a extensão CUDA
+opcional não foi compilada. Segundo a Meta, isso só desliga um pós-processamento que tapa pequenos
+buracos nas máscaras.
+
+## Desempenho em CPU
+
+O rastreamento com SAM 2.1 Tiny levou cerca de 2,2 s por quadro numa CPU de 4 threads. Isso dá
+cerca de 5,6 min para 5 s a 30 fps, com pico de 3,2 GB de RAM. Detalhes e dicas em
+[docs/ROADMAP.md](docs/ROADMAP.md).

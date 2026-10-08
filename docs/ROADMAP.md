@@ -10,7 +10,7 @@ relação ao plano original são duas. O teste do Wan Animate veio para a Fase 3
 | Fase | Entrega | Critério de conclusão | Status |
 |---|---|---|---|
 | 1. Ambiente | Estrutura do projeto, instalador, diagnóstico de hardware | `scripts/diagnose.ps1` e `studio diagnose` rodam no PC do usuário | Código pronto; falta rodar no Windows do usuário |
-| 2. SAM 2.1 | Selecionar pessoa com clique, rastrear, corrigir, exportar prévia | Rastrear uma pessoa por 5 s e corrigir as máscaras, com vídeo real | Código pronto e testado com pesos aleatórios; **falta validar com pesos reais** |
+| 2. SAM 2.1 | Selecionar pessoa com clique, rastrear, corrigir, exportar prévia | Rastrear uma pessoa por 5 s e corrigir as máscaras, com vídeo real | Código pronto e testado contra o SAM 2 oficial (pesos aleatórios); **falta validar a qualidade com os pesos reais num vídeo real** |
 | 3. Teste do Wan Animate | Notebook Kaggle que roda o Wan 2.2 Animate (replacement) via ComfyUI sem interface, usando nossas máscaras | Um clipe de 3–5 s com personagem substituído, gerado sem custo; tempo e qualidade anotados | A fazer |
 | 4. Integração | Envio do clipe + máscara + referência do ChatGPT para o Kaggle e retorno do resultado ao estúdio | Fluxo de ponta a ponta disparado pelo estúdio | A fazer, se a Fase 3 passar |
 | 5. Refinamento | Composição com bordas suaves, ajuste de cor, upscale para 1080×1920, áudio original | Vídeo final pronto para Reels com comparativo antes/depois | A fazer |
@@ -29,6 +29,28 @@ relação ao plano original são duas. O teste do Wan Animate veio para a Fase 3
 4. No painel (`bash scripts/start.sh`), corrigir um quadro ruim com clique de exclusão, rastrear de
    novo e exportar.
 5. Anotar o tempo por quadro que o comando imprime: é a medida de desempenho da CPU.
+
+### Desempenho medido (CPU, sem GPU)
+
+SAM 2.1 Tiny, Xeon de 4 threads, clipe de 5 s em 854×480 (150 quadros):
+
+| Etapa | Tempo |
+|---|---|
+| Preparar o clipe | 1,4 s |
+| Primeiro clique (carrega os quadros) | 4,7 s |
+| Cliques seguintes | menos de 0,1 s |
+| Rastreamento | 2,2 s por quadro, cerca de 5,6 min no total |
+| Exportação | 2 s |
+
+Pico de RAM: 3,2 GB.
+
+O tempo do rastreamento é proporcional ao número de quadros. Para ir mais rápido em CPU:
+
+- `STUDIO_MAX_FPS=15` corta o tempo pela metade.
+- Um trecho de 3 s em vez de 5 s também reduz o total.
+
+O custo de cálculo é o mesmo com os pesos reais: os números valem como estimativa. Num PC de
+notebook comum, espere algo entre 3 e 10 minutos por clipe de 5 s.
 
 ## Fase 3 — plano do teste do Wan Animate
 
