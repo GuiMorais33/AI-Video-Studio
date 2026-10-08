@@ -1,7 +1,7 @@
 "use client";
 
-import { useRef, useState } from "react";
-import { KAGGLE_GUIDE_URL, type Project, engine, fileUrl, referenceUrl } from "@/lib/engine";
+import { useEffect, useRef, useState } from "react";
+import { KAGGLE_GUIDE_URL, type KaggleStatus, type Project, engine, fileUrl, referenceUrl } from "@/lib/engine";
 
 interface Props {
   project: Project;
@@ -16,6 +16,9 @@ export function WanPanel({ project, locked, run }: Props) {
   const [resolution, setResolution] = useState<"480p" | "720p">("480p");
   const [fps, setFps] = useState<string>("original");
   const [prompt, setPrompt] = useState("");
+  const [kaggle, setKaggle] = useState<KaggleStatus | null>(null);
+  const [kaggleUser, setKaggleUser] = useState<string | null>(null);
+  const [token, setToken] = useState("");
   const refInput = useRef<HTMLInputElement>(null);
   const resultInput = useRef<HTMLInputElement>(null);
 
@@ -23,7 +26,24 @@ export function WanPanel({ project, locked, run }: Props) {
   const activeJob = project.active_job?.kind === "wan_package" ? project.active_job : null;
   const lastJob = project.jobs.wan_package;
   const wan = project.wan;
-  const version = `${project.mask_version}-${lastJob?.updated_at ?? ""}-${resultVersion}`;
+
+
+  const remoteJob = project.remote_job;
+  const lastKaggle = project.jobs.kaggle;
+  // Muda quando o pacote é refeito, um resultado é importado ou o Kaggle devolve um vídeo.
+  const version = `${project.mask_version}-${lastJob?.updated_at ?? ""}-${lastKaggle?.updated_at ?? ""}-${resultVersion}`;
+  useEffect(() => {
+    engine.kaggleStatus().then(setKaggle, () => undefined);
+  }, [remoteJob?.id]);
+
+  function saveToken() {
+    run("Conectando ao Kaggle…", async () => {
+      const account = await engine.saveKaggleToken(token);
+      setKaggleUser(account.username);
+      setToken("");
+      setKaggle(await engine.kaggleStatus());
+    });
+  }
 
   const blockers: string[] = [];
   if (!project.reference) blockers.push("envie a imagem do personagem");
@@ -124,8 +144,59 @@ export function WanPanel({ project, locked, run }: Props) {
         </div>
 
         <div>
+          <h3>Gerar no Kaggle</h3>
+          {kaggle && !kaggle.installed && (
+            <p className="status warn">Pacote kaggle não instalado no motor. Rode: bash scripts/setup.sh</p>
+          )}
+          {kaggle && !kaggle.configured ? (
+            <>
+              <p className="muted small">
+                Cole o token de API do Kaggle (kaggle.com → Settings → API → Generate New Token). Fica salvo só neste
+                computador.
+              </p>
+              <input type="password" value={token} onChange={(e) => setToken(e.target.value)} placeholder="Token do Kaggle" />
+              <button disabled={locked || token.trim().length < 20} onClick={saveToken}>
+                Salvar token
+              </button>
+            </>
+          ) : (
+            kaggle && (
+              <p className="muted small">
+                Kaggle conectado{kaggleUser ? ` como ${kaggleUser}` : ""}. A geração roda numa GPU T4 grátis
+                (12 a 40 min) e o resultado volta sozinho para cá.
+              </p>
+            )
+          )}
+          {remoteJob ? (
+            <div className="job">
+              <div className="job-head">
+                <span>{remoteJob.message ?? "Enviando ao Kaggle…"}</span>
+                <span>{Math.round(remoteJob.progress * 100)}%</span>
+              </div>
+              <div className="bar"><div style={{ width: `${remoteJob.progress * 100}%` }} /></div>
+            </div>
+          ) : (
+            <button
+              className="primary"
+              disabled={locked || !kaggle?.configured || !wan["wan_package.zip"] || Boolean(kaggle?.running)}
+              onClick={() => run("Enviando ao Kaggle…", () => engine.runOnKaggle(project.id))}
+            >
+              Gerar no Kaggle
+            </button>
+          )}
+          {!remoteJob && kaggle?.running && kaggle.running.project_id !== project.id && (
+            <p className="status warn">Outro projeto está usando o Kaggle agora (um por vez).</p>
+          )}
+          {lastKaggle?.status === "error" && !remoteJob && <p className="status warn">Falhou: {lastKaggle.message}</p>}
+          {lastKaggle?.status === "done" && !remoteJob && <p className="muted small">{lastKaggle.message}</p>}
+        </div>
+
+        <div>
           <h3>Resultado</h3>
-          <p className="muted small">Depois de rodar o notebook, baixe o resultado.mp4 do Kaggle e importe aqui.</p>
+          <p className="muted small">
+            Chega aqui sozinho quando a geração no Kaggle termina. No modo manual, rode o notebook no Kaggle e importe o
+            resultado.mp4.
+          </p>
           <input ref={resultInput} type="file" accept="video/*" hidden onChange={pickResult} />
           <button disabled={locked || !wan["wan_input.mp4"]} onClick={() => resultInput.current?.click()}>
             Importar resultado

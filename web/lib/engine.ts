@@ -7,7 +7,7 @@ export type JobStatus = "queued" | "running" | "done" | "error";
 export interface Job {
   id: string;
   project_id: string;
-  kind: "track" | "export" | "wan_package";
+  kind: "track" | "export" | "wan_package" | "kaggle";
   status: JobStatus;
   progress: number;
   message: string | null;
@@ -47,6 +47,7 @@ export interface Project extends ProjectSummary {
   clicks: Click[];
   objects: number[];
   active_job: Job | null;
+  remote_job: Job | null;
   jobs: Partial<Record<Job["kind"], Job>>;
   exports: Record<"preview.mp4" | "mask.mp4" | "masks.zip", boolean>;
   reference: boolean;
@@ -54,6 +55,13 @@ export interface Project extends ProjectSummary {
 }
 
 export type WanFile = "wan_package.zip" | "wan_input.mp4" | "wan_result.mp4" | "wan_final.mp4" | "comparativo.mp4";
+
+export interface KaggleStatus {
+  configured: boolean;
+  source: string | null;
+  installed: boolean;
+  running: Job | null;
+}
 
 export interface WanPackageOptions {
   resolution: "480p" | "720p";
@@ -122,6 +130,10 @@ export const engine = {
     return request<{ width: number; height: number }>(`/projects/${id}/reference`, { method: "POST", body: form });
   },
   wanPackage: (id: string, options: WanPackageOptions) => request<Job>(`/projects/${id}/wan-package`, json(options)),
+  kaggleStatus: () => request<KaggleStatus>("/kaggle"),
+  saveKaggleToken: (token: string) =>
+    request<{ username: string; quota: string | null }>("/kaggle/token", json({ token })),
+  runOnKaggle: (id: string) => request<Job>(`/projects/${id}/kaggle`, { method: "POST" }),
   uploadWanResult: (id: string, file: File) => {
     const form = new FormData();
     form.append("file", file);

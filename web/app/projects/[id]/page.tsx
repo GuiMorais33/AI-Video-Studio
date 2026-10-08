@@ -66,11 +66,13 @@ export default function ProjectPage() {
   // Enquanto houver tarefa ativa, atualiza o progresso.
   const activeJob = project?.active_job ?? null;
   const activeJobId = activeJob?.id;
+  // Geração no Kaggle leva dezenas de minutos: consulta mais espaçada.
+  const remoteJobId = project?.remote_job?.id;
   useEffect(() => {
-    if (!activeJobId) return;
-    const timer = setInterval(refresh, 700);
+    if (!activeJobId && !remoteJobId) return;
+    const timer = setInterval(refresh, activeJobId ? 700 : 5000);
     return () => clearInterval(timer);
-  }, [activeJobId, refresh]);
+  }, [activeJobId, remoteJobId, refresh]);
 
   const lastFrame = (project?.num_frames ?? 1) - 1;
   const goTo = useCallback((idx: number) => setFrame(Math.max(0, Math.min(lastFrame, idx))), [lastFrame]);
