@@ -354,8 +354,8 @@ def test_log_follower_thread_survives_stream_errors(monkeypatch):
     class Api:
         def kernels_logs_stream(self, kernel):
             calls.append(kernel)
-            if len(calls) == 1:
-                raise ConnectionError("queda")
+            if len(calls) <= 8:  # o Kaggle derruba o stream várias vezes em fases sem saída
+                raise ConnectionError("Response ended prematurely")
             yield {"data": "AIVS_RUN r1\nAIVS_PROGRESS 0.2 Pose 3/77\n"}
 
     follower = kaggle_remote._LogFollower(Api(), "maria/k", "r1")
@@ -365,4 +365,4 @@ def test_log_follower_thread_survives_stream_errors(monkeypatch):
             break
         time.sleep(0.01)
     follower.stop()
-    assert follower.latest() == (0.2, "Pose 3/77") and len(calls) >= 2
+    assert follower.latest() == (0.2, "Pose 3/77") and len(calls) >= 9

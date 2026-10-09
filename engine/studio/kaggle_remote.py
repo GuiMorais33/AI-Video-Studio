@@ -224,13 +224,13 @@ class _LogFollower:
                         self._latest = (float(value), message.strip())
 
     def _run(self) -> None:
-        failures = 0
-        while not self._stop.is_set() and failures < 5:
+        # O Kaggle derruba o stream quando o notebook passa minutos sem imprimir (download do
+        # modelo, primeiro passo da geração): reconecta sempre, até a execução terminar.
+        while not self._stop.is_set():
             try:
                 self.consume(self._api.kernels_logs_stream(self._kernel))
-                failures = 0
             except Exception:
-                failures += 1
+                pass
             self._stop.wait(POLL_SECONDS)
 
 
