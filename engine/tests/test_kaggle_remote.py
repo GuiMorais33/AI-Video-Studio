@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import stat
+import time
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -19,13 +20,14 @@ OK = SimpleNamespace(status="ok", error="")
 
 class FakeApi:
     def __init__(self, final_status="COMPLETE", produce_result=True, dataset_exists=False,
-                 statuses=None, stale=False, dataset_error=""):
+                 statuses=None, stale=False, dataset_error="", output_blocked=False):
         self.final_status = final_status
         self.produce_result = produce_result
         self.dataset_exists = dataset_exists
         self.statuses = statuses  # sequência de status a devolver (padrão: 2x RUNNING e o final)
         self.stale = stale  # devolve a saída de uma execução anterior
         self.dataset_error = dataset_error
+        self.output_blocked = output_blocked  # download da saída falha (ex.: proxy bloqueia o domínio)
         self.calls: list[tuple] = []
         self.status_calls = 0
         self.pushed_metadata: dict = {}
@@ -79,9 +81,20 @@ class FakeApi:
         return SimpleNamespace(status=SimpleNamespace(name=status), failure_message=None)
 
     def kernels_logs(self, kernel_id):
-        return json.dumps([{"data": f"AIVS_PROGRESS 0.{self.status_calls}0 Gerando segmento {self.status_calls}\n"}])
+        entries = [
+            {"data": f"AIVS_RUN {self.run_id}\n"},
+            {"data": f"AIVS_PROGRESS 0.{self.status_calls}0 Gerando segmento {self.status_calls}\n"},
+        ]
+        if self.status_calls >= 3:  # fim da execução: o notebook imprime erro e relatório
+            if self.final_status != "COMPLETE":
+                entries.append({"stream_name": "stdout", "data": "AIVS_ERRO ImportError: cannot import name 'FqnToConfig'\n"})
+            summary = {"ok": self.final_status == "COMPLETE", "run_id": self.run_id, "etapas": {"pacote_s": 1.5}}
+            entries.append({"stream_name": "stdout", "data": f"AIVS_RELATORIO {json.dumps(summary)}\n"})
+        return json.dumps(entries)
 
     def kernels_output(self, kernel_id, path, force=False, quiet=True):
+        if self.output_blocked:
+            raise ConnectionError("Tunnel connection failed: 403 Forbidden")
         out = Path(path)
         report = {"etapas": {"geracao_s": 123}, "run_id": "outro" if self.stale else self.run_id}
         if self.final_status != "COMPLETE":
@@ -182,6 +195,7 @@ def test_calls_match_installed_kaggle_api():
         "kernels_push": ["folder", "timeout"],
         "kernels_status": ["kernel"],
         "kernels_logs": ["kernel"],
+        "kernels_logs_stream": ["kernel"],
         "kernels_output": ["kernel", "path", "force", "quiet"],
         "quota_view": [],
     }
@@ -279,3 +293,76 @@ def test_quota_summary_reads_durations_with_days():
     )
     assert kaggle_remote.quota_summary(quota) == {"gpu_hours_used": 1.5, "gpu_hours_total": 30.0, "refresh": "2026-10-10"}
     assert kaggle_remote.quota_summary(SimpleNamespace()) is None
+
+
+def test_error_comes_from_log_when_output_cannot_be_downloaded(monkeypatch, project_root):
+    root, notebook = project_root
+    api = FakeApi(final_status="ERROR", produce_result=False, output_blocked=True)
+    _patch(monkeypatch, api)
+    with pytest.raises(kaggle_remote.KaggleError, match="FqnToConfig"):
+        kaggle_remote.run_on_kaggle({"id": "abc123"}, root, lambda *a: None, lambda p: "", notebook=notebook)
+
+
+def test_blocked_download_points_to_manual_import(monkeypatch, project_root):
+    root, notebook = project_root
+    api = FakeApi(output_blocked=True)
+    _patch(monkeypatch, api)
+    with pytest.raises(kaggle_remote.KaggleError, match="Baixe resultado.mp4 em .*/output"):
+        kaggle_remote.run_on_kaggle({"id": "abc123"}, root, lambda *a: None, lambda p: "", notebook=notebook)
+    assert json.loads((root / "exports" / "kaggle_relatorio.json").read_text())["etapas"] == {"pacote_s": 1.5}
+
+
+def test_progress_only_counts_after_this_run_starts():
+    old_run = "AIVS_RUN velho\nAIVS_PROGRESS 1.000 Pronto: resultado.mp4\n"
+    assert kaggle_remote._progress_for_run(old_run, "novo") is None
+    log = old_run + "AIVS_RUN novo\nAIVS_PROGRESS 0.030 Pacote: 77 quadros\nAIVS_PROGRESS 0.160 Codificando o texto (umT5)\n"
+    assert kaggle_remote._progress_for_run(log, "novo") == (0.16, "Codificando o texto (umT5)")
+
+
+def test_previous_run_log_does_not_move_progress(monkeypatch, project_root):
+    """Logo após o envio, o log ainda é o da execução anterior, que terminou em 100%."""
+    root, notebook = project_root
+    api = FakeApi()
+    api.kernels_logs = lambda kernel_id: json.dumps([{"data": "AIVS_RUN outro\nAIVS_PROGRESS 1.0 Pronto: resultado.mp4\n"}])
+    _patch(monkeypatch, api)
+    progress = []
+    kaggle_remote.run_on_kaggle({"id": "abc123"}, root, lambda f, m=None: progress.append((f, m)), lambda p: "ok",
+                                notebook=notebook)
+    assert not any(m and "Pronto" in m for _, m in progress)
+    assert max(f for f, m in progress if m and m.startswith("Kaggle:")) == 0.05
+
+
+def test_log_follower_reads_live_stream():
+    follower = kaggle_remote._LogFollower(api=None, kernel_id="maria/k", run_id="r1")
+    events = [
+        {"stream_name": "stdout", "data": "AIVS_PROGRESS 0.900 log antigo\n"},
+        {"stream_name": "stdout", "data": "AIVS_RUN r1\n"},
+        {"stream_name": "stdout", "data": "AIVS_PROGRESS 0.051 Pose 1/77\n"},
+        # sem charset no stream: o requests entrega UTF-8 lido como latin-1
+        {"stream_name": "stdout", "data": "AIVS_PROGRESS 0.450 Gerando o personagem (máscara)\n".encode().decode("latin-1")},
+    ]
+    follower.consume(events)
+    assert follower.latest() == (0.45, "Gerando o personagem (máscara)")
+    follower.consume(events[:3])  # reconexão: o Kaggle reenvia desde o começo
+    assert follower.latest() == (0.45, "Gerando o personagem (máscara)")
+
+
+def test_log_follower_thread_survives_stream_errors(monkeypatch):
+    monkeypatch.setattr(kaggle_remote, "POLL_SECONDS", 0)
+    calls = []
+
+    class Api:
+        def kernels_logs_stream(self, kernel):
+            calls.append(kernel)
+            if len(calls) == 1:
+                raise ConnectionError("queda")
+            yield {"data": "AIVS_RUN r1\nAIVS_PROGRESS 0.2 Pose 3/77\n"}
+
+    follower = kaggle_remote._LogFollower(Api(), "maria/k", "r1")
+    follower.start()
+    for _ in range(200):
+        if follower.latest():
+            break
+        time.sleep(0.01)
+    follower.stop()
+    assert follower.latest() == (0.2, "Pose 3/77") and len(calls) >= 2

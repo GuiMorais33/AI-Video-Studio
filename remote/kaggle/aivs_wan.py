@@ -125,6 +125,7 @@ def environment() -> dict[str, Any]:
     info: dict[str, Any] = {
         "python": platform.python_version(),
         "torch": torch.__version__,
+        "torch_cuda": torch.version.cuda,
         "cuda": torch.cuda.is_available(),
         "gpus": [torch.cuda.get_device_name(i) for i in range(torch.cuda.device_count())],
     }
@@ -328,6 +329,15 @@ def extract_pose_face(
     return poses, faces, guided
 
 
+def pose_device() -> str:
+    """Com duas GPUs (T4 x2), a pose usa a segunda: a memória que o ONNX Runtime reserva
+    não atrapalha o texto e a geração, que ficam na primeira."""
+    torch = _torch()
+    if not torch.cuda.is_available():
+        return "cpu"
+    return "cuda:1" if torch.cuda.device_count() > 1 else "cuda:0"
+
+
 def load_pose_model(cfg: Config, preprocess_dir: Path, cache: Path):
     if cfg.pose_model is not None:
         return cfg.pose_model
@@ -340,7 +350,7 @@ def load_pose_model(cfg: Config, preprocess_dir: Path, cache: Path):
         folder = str(Path(cfg.pose_path).parent)
         onnx = str(Path(resolve_folder(cfg.pose_repo, folder, cache)) / Path(cfg.pose_path).name)
     # ViTPose aceita a pasta (procura end2end.onnx dentro) ou um arquivo .onnx.
-    device = "cuda:0" if _torch().cuda.is_available() else "cpu"
+    device = pose_device()
     if device != "cpu":
         import onnxruntime
 
@@ -365,12 +375,15 @@ def encode_prompt(cfg: Config, prompt: str, device: str):
     dtype = getattr(torch, cfg.dtype)
     pipe = WanAnimatePipeline.from_pretrained(cfg.repo, transformer=None, vae=None, image_encoder=None, torch_dtype=dtype)
     pipe.text_encoder.to(device)
-    embeds, _ = pipe.encode_prompt(
-        prompt=prompt, do_classifier_free_guidance=False, max_sequence_length=512, device=device
-    )
+    # encode_prompt do diffusers não desliga o gradiente: sem no_grad, o embedding guardaria o
+    # grafo e manteria o umT5 inteiro (~11 GB) na GPU depois de apagar o pipeline.
+    with torch.no_grad():
+        embeds, _ = pipe.encode_prompt(
+            prompt=prompt, do_classifier_free_guidance=False, max_sequence_length=512, device=device
+        )
     if not torch.isfinite(embeds).all():
         raise FloatingPointError("O codificador de texto gerou NaN/inf")
-    embeds = embeds.to("cpu", dtype)
+    embeds = embeds.detach().to("cpu", dtype)
     del pipe
     gc.collect()
     if torch.cuda.is_available():
@@ -523,14 +536,17 @@ def main(cfg: Config | None = None) -> dict:
     report = Report(out_dir / "relatorio.json")
     report.data["config"] = {k: v for k, v in asdict(cfg).items() if k != "pose_model"}
     device = "cuda:0" if torch.cuda.is_available() else "cpu"
+    run_file = next(Path(cfg.input_root).rglob("aivs_run.json"), None)
+    if run_file is not None:  # enviado pelo estúdio: identifica esta execução
+        report.data["run_id"] = json.loads(run_file.read_text()).get("run_id")
+        # Antes de qualquer progresso: o estúdio só confia nas linhas que vêm depois desta.
+        print("AIVS_RUN", report.data["run_id"], flush=True)
     try:
         with report.etapa("ambiente"):
             report.data["ambiente"] = environment()
+            print("AIVS_AMBIENTE", json.dumps(report.data["ambiente"]), flush=True)
             progress(0.01, "Ambiente verificado")
         with report.etapa("pacote"):
-            run_file = next(Path(cfg.input_root).rglob("aivs_run.json"), None)
-            if run_file is not None:  # enviado pelo estúdio: identifica esta execução
-                report.data["run_id"] = json.loads(run_file.read_text()).get("run_id")
             job_dir = find_package(Path(cfg.input_root), scratch)
             job, frames, masks, reference = load_job(job_dir)
             report.data["job"] = {k: job[k] for k in ("project_id", "width", "height", "fps", "num_frames")}
@@ -545,6 +561,10 @@ def main(cfg: Config | None = None) -> dict:
             session = getattr(pose_model, "session", None)
             if session is not None:
                 report.data["pose_providers"] = session.get_providers()
+                report.data["pose_device"] = getattr(pose_model, "device", None)
+                if device != "cpu" and "CUDAExecutionProvider" not in report.data["pose_providers"]:
+                    report.aviso("Pose na CPU: o onnxruntime não achou o CUDA (mais lento, mesmo resultado)")
+            session = None  # sem referências soltas: a sessão do ONNX Runtime segura ~3 GB de VRAM
             poses, faces, guided = extract_pose_face(
                 frames, masks, pose_model, helpers,
                 on_frame=lambda i: progress(0.05 + 0.1 * (i + 1) / len(frames), f"Pose {i + 1}/{len(frames)}"),
@@ -556,6 +576,9 @@ def main(cfg: Config | None = None) -> dict:
         with report.etapa("texto"):
             progress(0.16, "Codificando o texto (umT5)")
             embeds = encode_prompt(cfg, job.get("prompt") or DEFAULT_PROMPT, device)
+            if torch.cuda.is_available():
+                report.data["vram_texto_pico_gb"] = round(torch.cuda.max_memory_allocated(0) / 2**30, 2)
+                report.data["vram_apos_texto_gb"] = round(torch.cuda.memory_allocated(0) / 2**30, 2)
         with report.etapa("modelo"):
             progress(0.25, "Carregando o Wan 2.2 Animate (GGUF) e as LoRAs")
             pipe = build_pipeline(cfg, device, cache, report)
@@ -579,7 +602,11 @@ def main(cfg: Config | None = None) -> dict:
         report.data["ok"] = False
         report.data["erro"] = f"{type(exc).__name__}: {exc}"
         report.data["traceback"] = traceback.format_exc()[-6000:]
+        # Uma linha só: o estúdio lê o erro no log mesmo sem conseguir baixar a saída.
+        print("AIVS_ERRO", report.data["erro"].replace("\n", " ")[:2000], flush=True)
         raise
     finally:
         report.save()
+        resumo = {k: v for k, v in report.data.items() if k not in ("config", "traceback")}
+        print("AIVS_RELATORIO", json.dumps(resumo, ensure_ascii=False, default=str), flush=True)
     return report.data

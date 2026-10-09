@@ -20,7 +20,6 @@ PACKAGES = [
     "peft==0.21.2",
     "accelerate==1.15.0",
     "gguf==0.19.0",
-    "onnxruntime-gpu==1.30.0",
     "ftfy",
     "sentencepiece",
 ]
@@ -63,10 +62,19 @@ for path in ("/kaggle/working", "/kaggle/tmp", "/tmp"):
     except FileNotFoundError:
         pass"""
 
+# onnxruntime-gpu (pose) precisa da mesma versão principal de CUDA que o PyTorch da imagem:
+# 1.26.0 é a última feita para CUDA 12; a partir da 1.27 é CUDA 13.
+ONNXRUNTIME = {"12": "onnxruntime-gpu==1.26.0", "13": "onnxruntime-gpu==1.30.0"}
+
 INSTALL = (
     "import subprocess, sys\n"
+    "import torch\n"
     "# Mantém o PyTorch da imagem do Kaggle; fixa o resto nas versões testadas.\n"
-    f"subprocess.run([sys.executable, '-m', 'pip', 'install', '-q', {', '.join(repr(p) for p in PACKAGES)}], check=True)"
+    f"onnxruntime = {ONNXRUNTIME!r}.get((torch.version.cuda or '12').split('.')[0], {ONNXRUNTIME['12']!r})\n"
+    "print('PyTorch', torch.__version__, 'CUDA', torch.version.cuda, '->', onnxruntime)\n"
+    "# O torchao que vem na imagem é antigo e quebra a importação do diffusers (não é usado aqui).\n"
+    "subprocess.run([sys.executable, '-m', 'pip', 'uninstall', '-y', '-q', 'torchao'], check=False)\n"
+    f"subprocess.run([sys.executable, '-m', 'pip', 'install', '-q', {', '.join(repr(p) for p in PACKAGES)}, onnxruntime], check=True)"
 )
 
 CONFIG = """from aivs_wan import Config, main

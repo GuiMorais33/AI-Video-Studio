@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -23,7 +24,13 @@ def test_notebook_embeds_module_and_pins_versions():
     embedded = next(s for s in sources if s.startswith("%%writefile aivs_wan.py\n"))
     assert embedded.removeprefix("%%writefile aivs_wan.py\n") == (HERE / "aivs_wan.py").read_text()
     install = next(s for s in sources if "'-m', 'pip', 'install'" in s)
-    assert "diffusers==0.41.0" in install and "torch" not in install.replace("PyTorch", "")
+    assert "diffusers==0.41.0" in install
+    assert not re.search(r"'torch(vision|audio)?(==|')", install)  # mantém o PyTorch do Kaggle
+    assert "'uninstall', '-y', '-q', 'torchao'" in install
+    namespace: dict = {}
+    exec(next(line for line in install.splitlines() if line.startswith("onnxruntime = ")).replace(
+        "torch.version.cuda", "cuda"), {"cuda": "12.8"}, namespace)
+    assert namespace["onnxruntime"] == "onnxruntime-gpu==1.26.0"
     assert any("main(cfg)" in s for s in sources)
 
 

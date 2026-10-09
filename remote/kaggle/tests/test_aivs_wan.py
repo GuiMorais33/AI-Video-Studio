@@ -326,6 +326,7 @@ def test_main_end_to_end_on_cpu(tmp_path, tiny_models, tiny_vitpose, wan_dir, pa
             zf.extractall(input_root / "wan_package")
     else:
         (input_root / "wan_package.zip").write_bytes(package.read_bytes())
+    (input_root / "aivs_run.json").write_text(json.dumps({"run_id": "r123", "project_id": "p"}))
     cfg = _config(tmp_path, tiny_models, wan_dir, tmp_path / "input", tiny_vitpose)
     report = aivs_wan.main(cfg)
 
@@ -343,12 +344,17 @@ def test_main_end_to_end_on_cpu(tmp_path, tiny_models, tiny_vitpose, wan_dir, pa
     for name in ("pose.mp4", "rosto.mp4", "mascara.mp4"):
         assert (out / "depuracao" / name).exists()
     assert _probe(out / "depuracao" / "rosto.mp4")["width"] == 512
-    lines = [l for l in capsys.readouterr().out.splitlines() if l.startswith("AIVS_PROGRESS")]
+    stdout = capsys.readouterr().out.splitlines()
+    assert report["run_id"] == "r123" and stdout.index("AIVS_RUN r123") < min(
+        i for i, l in enumerate(stdout) if l.startswith("AIVS_PROGRESS"))  # o estúdio ignora progresso antes disso
+    lines = [l for l in stdout if l.startswith("AIVS_PROGRESS")]
     values = [float(l.split()[1]) for l in lines]
     assert values == sorted(values) and values[-1] == 1.0
+    summary = json.loads(next(l for l in stdout if l.startswith("AIVS_RELATORIO ")).removeprefix("AIVS_RELATORIO "))
+    assert summary["ok"] is True and summary["run_id"] == "r123" and "traceback" not in summary
 
 
-def test_main_reports_errors(tmp_path, tiny_models, tiny_vitpose, wan_dir):
+def test_main_reports_errors(tmp_path, tiny_models, tiny_vitpose, wan_dir, capsys):
     empty = tmp_path / "input"
     empty.mkdir()
     cfg = _config(tmp_path, tiny_models, wan_dir, empty, tiny_vitpose)
@@ -356,3 +362,23 @@ def test_main_reports_errors(tmp_path, tiny_models, tiny_vitpose, wan_dir):
         aivs_wan.main(cfg)
     saved = json.loads((Path(cfg.output) / "relatorio.json").read_text())
     assert saved["ok"] is False and "wan_package.zip" in saved["erro"]
+    error_lines = [l for l in capsys.readouterr().out.splitlines() if l.startswith("AIVS_ERRO ")]
+    assert len(error_lines) == 1 and "wan_package.zip" in error_lines[0]
+
+
+def test_encode_prompt_keeps_no_graph(tiny_models):
+    """Sem grafo de gradiente: senão o embedding prenderia o codificador de texto na GPU."""
+    cfg = aivs_wan.Config(repo=str(tiny_models["repo"]), dtype="float32")
+    embeds = aivs_wan.encode_prompt(cfg, "a robot dancing", "cpu")
+    assert embeds.grad_fn is None and not embeds.requires_grad and embeds.device.type == "cpu"
+
+
+def test_pose_device_prefers_second_gpu(monkeypatch):
+    torch = aivs_wan._torch()
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 2)
+    assert aivs_wan.pose_device() == "cuda:1"
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 1)
+    assert aivs_wan.pose_device() == "cuda:0"
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    assert aivs_wan.pose_device() == "cpu"

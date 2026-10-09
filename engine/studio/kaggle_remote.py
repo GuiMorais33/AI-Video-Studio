@@ -16,6 +16,7 @@ import os
 import re
 import shutil
 import tempfile
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -33,6 +34,9 @@ RESULT_NAME = "resultado.mp4"
 # O notebook imprime linhas "AIVS_PROGRESS <0-1> <mensagem>" que viram progresso aqui.
 # O log do Kaggle pode vir como JSON numa linha só: a mensagem para em aspas, barra ou fim de linha.
 PROGRESS_RE = re.compile(r"AIVS_PROGRESS\s+([0-9.]+)\s+([^\"\\\n]*)")
+# Erro e relatório também saem no log, numa linha cada: servem quando a saída não pode ser baixada.
+ERROR_RE = re.compile(r"^AIVS_ERRO (.+)$", re.M)
+REPORT_RE = re.compile(r"^AIVS_RELATORIO (\{.*\})$", re.M)
 
 
 class KaggleError(RuntimeError):
@@ -138,6 +142,105 @@ def check_account() -> dict[str, Any]:
     except Exception:  # cota é informativa
         pass
     return {"username": user, "quota": quota}
+
+
+def _log_text(raw: str) -> str:
+    """O log do Kaggle vem como JSON ([{"stream_name", "time", "data"}, ...]); devolve só o texto."""
+    try:
+        entries = json.loads(raw)
+    except ValueError:
+        return raw
+    if not isinstance(entries, list):
+        return raw
+    return "".join(str(e.get("data", "")) for e in entries if isinstance(e, dict))
+
+
+def _progress_for_run(text: str, run_id: str) -> tuple[float, str] | None:
+    """Último "AIVS_PROGRESS" DEPOIS da linha "AIVS_RUN <run_id>" que o notebook imprime ao começar.
+
+    Sem essa linha, o log pode ser o de uma execução anterior (logo após o envio, o Kaggle
+    ainda mostra a sessão antiga) e o progresso dela não vale para esta.
+    """
+    start = text.find(f"AIVS_RUN {run_id}")
+    if start < 0:
+        return None
+    matches = PROGRESS_RE.findall(text, start)
+    if not matches:
+        return None
+    value, message = matches[-1]
+    return float(value), message.strip()
+
+
+def _utf8(text: str) -> str:
+    """O stream do Kaggle não informa o charset e o requests decodifica como latin-1."""
+    try:
+        return text.encode("latin-1").decode("utf-8")
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        return text
+
+
+class _LogFollower:
+    """Acompanha o log ao vivo numa thread e guarda o progresso mais recente desta execução.
+
+    O kernels_logs só devolve o log quando a execução termina; durante a execução, o
+    kernels_logs_stream repassa as linhas na hora. A cada reconexão o Kaggle reenvia o log
+    desde o começo, então o progresso só volta a contar depois da linha AIVS_RUN.
+    """
+
+    def __init__(self, api: Any, kernel_id: str, run_id: str):
+        self._api, self._kernel, self._run_id = api, kernel_id, run_id
+        self._stop = threading.Event()
+        self._lock = threading.Lock()
+        self._latest: tuple[float, str] | None = None
+        self._thread: threading.Thread | None = None
+
+    def start(self) -> None:
+        if self._thread is None and hasattr(self._api, "kernels_logs_stream"):
+            self._thread = threading.Thread(target=self._run, name="kaggle-log", daemon=True)
+            self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+
+    def latest(self) -> tuple[float, str] | None:
+        with self._lock:
+            return self._latest
+
+    def consume(self, events: Any) -> None:
+        """Lê uma conexão do stream (um iterável de eventos {"data": ...})."""
+        matched = False
+        for event in events:
+            if self._stop.is_set():
+                return
+            text = _utf8(str(event.get("data", "") if isinstance(event, dict) else event))
+            if not matched:
+                start = text.find(f"AIVS_RUN {self._run_id}")
+                if start < 0:
+                    continue
+                matched, text = True, text[start:]
+            for value, message in PROGRESS_RE.findall(text):
+                with self._lock:
+                    if self._latest is None or float(value) >= self._latest[0]:
+                        self._latest = (float(value), message.strip())
+
+    def _run(self) -> None:
+        failures = 0
+        while not self._stop.is_set() and failures < 5:
+            try:
+                self.consume(self._api.kernels_logs_stream(self._kernel))
+                failures = 0
+            except Exception:
+                failures += 1
+            self._stop.wait(POLL_SECONDS)
+
+
+def _report_from_log(log: str) -> dict[str, Any]:
+    for line in reversed(REPORT_RE.findall(log)):
+        try:
+            return json.loads(line)
+        except ValueError:
+            continue
+    return {}
 
 
 def _status_name(response: Any) -> str:
@@ -248,52 +351,74 @@ def run_on_kaggle(
         started = time.monotonic()
         last_fraction = 0.05
         seen_active, polls = False, 0
-        while True:
-            time.sleep(POLL_SECONDS)
-            polls += 1
-            status = _status_name(api.kernels_status(kernel_id))
-            seen_active = seen_active or status in ACTIVE
-            message = None
-            try:
-                matches = PROGRESS_RE.findall(api.kernels_logs(kernel_id) or "")
-            except Exception:
-                matches = []
-            if matches:
-                value, message = matches[-1]
-                last_fraction = max(last_fraction, 0.05 + 0.85 * min(1.0, float(value)))
-            minutes = int((time.monotonic() - started) / 60)
-            progress(last_fraction, f"Kaggle: {status.lower()} ({minutes} min){' · ' + message if message else ''}")
-            # Logo após o envio o status ainda pode ser o da execução anterior: só aceita o fim
-            # depois de ver a nova versão na fila/rodando (ou após alguns minutos).
-            if status in TERMINAL and (seen_active or polls >= 6):
-                break
-            if time.monotonic() - started > MAX_WAIT_SECONDS:
-                raise KaggleError("O notebook passou de 12 h sem terminar.")
+        follower = _LogFollower(api, kernel_id, run_id)
+        try:
+            while True:
+                time.sleep(POLL_SECONDS)
+                polls += 1
+                status = _status_name(api.kernels_status(kernel_id))
+                seen_active = seen_active or status in ACTIVE
+                if seen_active:
+                    follower.start()
+                latest = follower.latest()
+                if latest is None:  # sem stream ao vivo: o log completo só existe no fim
+                    try:
+                        latest = _progress_for_run(_log_text(api.kernels_logs(kernel_id) or ""), run_id)
+                    except Exception:
+                        latest = None
+                message = None
+                if latest is not None:
+                    value, message = latest
+                    last_fraction = max(last_fraction, 0.05 + 0.85 * min(1.0, value))
+                minutes = int((time.monotonic() - started) / 60)
+                progress(last_fraction, f"Kaggle: {status.lower()} ({minutes} min){' · ' + message if message else ''}")
+                # Logo após o envio o status ainda pode ser o da execução anterior: só aceita o fim
+                # depois de ver a nova versão na fila/rodando (ou após alguns minutos).
+                if status in TERMINAL and (seen_active or polls >= 6):
+                    break
+                if time.monotonic() - started > MAX_WAIT_SECONDS:
+                    raise KaggleError("O notebook passou de 12 h sem terminar.")
+        finally:
+            follower.stop()
 
+        try:
+            log = _log_text(api.kernels_logs(kernel_id) or "")
+        except Exception:
+            log = ""
         out_dir = tmp / "output"
         out_dir.mkdir()
+        download_error: Exception | None = None
         try:
             api.kernels_output(kernel_id, str(out_dir), force=True, quiet=True)
-        except Exception:
-            pass
+        except Exception as exc:
+            download_error = exc
         report = next(out_dir.rglob("relatorio.json"), None)
-        report_data = json.loads(report.read_text()) if report is not None else {}
-        if report is not None and report_data.get("run_id") != run_id:
+        report_data = json.loads(report.read_text()) if report is not None else _report_from_log(log)
+        if report_data and report_data.get("run_id") != run_id:
             raise KaggleError(
                 "O Kaggle devolveu a saída de outra execução (relatório de outro envio). "
                 f"Tente de novo ou confira https://www.kaggle.com/code/{kernel_id}"
             )
+        # Guardado também em caso de erro: traz tempos, avisos e o erro desta execução.
+        if report is not None:
+            shutil.copyfile(report, root / "exports" / "kaggle_relatorio.json")
+        elif report_data:
+            (root / "exports" / "kaggle_relatorio.json").write_text(json.dumps(report_data, indent=2, ensure_ascii=False))
         if status != "COMPLETE":
-            detail = report_data.get("erro", "")
+            errors = ERROR_RE.findall(log)
+            detail = report_data.get("erro") or (errors[-1] if errors else "")
             raise KaggleError(
                 f"O notebook terminou com status {status.lower()}. {detail} "
                 f"Veja o log em https://www.kaggle.com/code/{kernel_id}"
             )
         result = next(out_dir.rglob(RESULT_NAME), None)
+        if result is None and download_error is not None:
+            raise KaggleError(
+                f"O notebook terminou, mas não foi possível baixar o resultado ({type(download_error).__name__}). "
+                f"Baixe {RESULT_NAME} em https://www.kaggle.com/code/{kernel_id}/output e importe na etapa 4."
+            )
         if result is None:
             raise KaggleError(f"O notebook terminou sem gerar {RESULT_NAME}. Veja https://www.kaggle.com/code/{kernel_id}")
-        if report is not None:
-            shutil.copyfile(report, root / "exports" / "kaggle_relatorio.json")
         progress(0.95, "Importando o resultado")
         upload = root / f".kaggle-{RESULT_NAME}"
         shutil.copyfile(result, upload)
