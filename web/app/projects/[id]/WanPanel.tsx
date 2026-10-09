@@ -174,7 +174,7 @@ export function WanPanel({ project, locked, run }: Props) {
             kaggle && (
               <p className="muted small">
                 Kaggle conectado{account ? ` como ${account.username}` : ""}. A geração roda numa GPU T4 grátis
-                (12 a 40 min) e o resultado volta sozinho para cá.
+                (cerca de 40 min para 5 s de vídeo) e o resultado volta sozinho para cá.
                 {account?.quota && (
                   <>
                     {" "}

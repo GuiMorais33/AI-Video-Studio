@@ -573,23 +573,27 @@ def main(cfg: Config | None = None) -> dict:
                 report.aviso(f"{len(frames) - guided} quadro(s) sem máscara: pose estimada no quadro inteiro")
             del pose_model
             gc.collect()
+            if device.startswith("cuda"):
+                # O ONNX Runtime troca o dispositivo atual da thread para a GPU da pose; sem voltar,
+                # o que usa o "dispositivo padrão" (streams do offload, medições) iria para a GPU 1.
+                torch.cuda.set_device(torch.device(device))
         with report.etapa("texto"):
             progress(0.16, "Codificando o texto (umT5)")
             embeds = encode_prompt(cfg, job.get("prompt") or DEFAULT_PROMPT, device)
             if torch.cuda.is_available():
-                report.data["vram_texto_pico_gb"] = round(torch.cuda.max_memory_allocated(0) / 2**30, 2)
-                report.data["vram_apos_texto_gb"] = round(torch.cuda.memory_allocated(0) / 2**30, 2)
+                report.data["vram_texto_pico_gb"] = round(torch.cuda.max_memory_allocated(torch.device(device)) / 2**30, 2)
+                report.data["vram_apos_texto_gb"] = round(torch.cuda.memory_allocated(torch.device(device)) / 2**30, 2)
         with report.etapa("modelo"):
             progress(0.25, "Carregando o Wan 2.2 Animate (GGUF) e as LoRAs")
             pipe = build_pipeline(cfg, device, cache, report)
             if torch.cuda.is_available():
-                torch.cuda.reset_peak_memory_stats()
+                torch.cuda.reset_peak_memory_stats(torch.device(device))
         with report.etapa("geracao"):
             progress(0.45, "Gerando o personagem")
             result, info = generate(pipe, cfg, job, reference, poses, faces, bg, gen_masks, embeds, device)
             report.data["geracao"] = info
             if torch.cuda.is_available():
-                report.data["vram_pico_gb"] = round(torch.cuda.max_memory_allocated() / 2**30, 2)
+                report.data["vram_pico_gb"] = round(torch.cuda.max_memory_allocated(torch.device(device)) / 2**30, 2)
         with report.etapa("exportacao"):
             write_video(result, job["fps"], out_dir / "resultado.mp4")
             debug = out_dir / "depuracao"

@@ -68,8 +68,17 @@ Pode deixar a página fechada enquanto roda. Só um notebook por vez.
 | ViTPose-H wholebody (repositório oficial) | ~2,5 GB |
 | LoRAs (lightx2v + relight, Kijai) | ~1 GB |
 
-Estimativa, ainda não medida numa T4: de 15 a 45 min por clipe de 5 s a 16 fps, a maior parte em
-download e geração.
+**Tempo medido numa T4 (09/10/2026):** 39 min para um clipe de 4,8 s a 16 fps (77 quadros,
+464×832). Com as 30 h semanais, dá para uns 45 clipes por semana.
+
+| Etapa | Tempo |
+|---|---|
+| Instalação dos pacotes e ambiente | ~1,5 min |
+| Pose e rosto (ViTPose na 2ª T4) | 50 s |
+| Texto (download do umT5 e codificação) | 1,6 min |
+| Download e carga do Wan GGUF, VAE, CLIP e LoRAs | 5 min |
+| Geração: 6 passos de ~3,9 min cada | 23 min |
+| VAE: codificar o fundo e decodificar o vídeo | ~7 min |
 
 ## Se der erro
 

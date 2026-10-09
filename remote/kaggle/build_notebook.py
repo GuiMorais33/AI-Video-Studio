@@ -39,8 +39,8 @@ Este notebook é gerado pelo AI Video Studio. Ele:
 - **Internet:** ligada (Settings → Internet on). Requer o telefone verificado na conta.
 - **Dados:** o dataset com o `wan_package.zip` anexado (Add Input).
 
-Depois use **Save Version → Save & Run All**. Leva de 15 a 45 minutos; a maior parte é download
-dos modelos (~30 GB por sessão).
+Depois use **Save Version → Save & Run All**. Um clipe de 5 s a 16 fps leva cerca de 40 minutos numa
+T4: ~7 min de instalação e download dos modelos (~28 GB por sessão) e ~30 min de geração.
 
 **Regras para não ter a conta bloqueada:**
 
