@@ -89,12 +89,44 @@ def _cpu_model() -> str | None:
 
 def _nvidia_gpus() -> list[dict[str, Any]]:
     out = _cmd_output(["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader,nounits"])
+    # Consulta separada: drivers antigos não conhecem compute_cap e a lista de placas não pode sumir.
+    extra = (_cmd_output(["nvidia-smi", "--query-gpu=compute_cap,driver_version", "--format=csv,noheader"]) or "").splitlines()
     gpus = []
-    for line in (out or "").splitlines():
+    for i, line in enumerate((out or "").splitlines()):
         parts = [p.strip() for p in line.split(",")]
         if len(parts) == 2 and parts[1].isdigit():
-            gpus.append({"name": parts[0], "vram_gb": round(int(parts[1]) / 1024, 1)})
+            gpu: dict[str, Any] = {"name": parts[0], "vram_gb": round(int(parts[1]) / 1024, 1),
+                                   "compute_cap": None, "driver": None}
+            cap, _, driver = (p.strip() for p in (extra[i] if i < len(extra) else "").partition(","))
+            if re.fullmatch(r"\d+\.\d+", cap):
+                gpu["compute_cap"] = float(cap)
+            if re.match(r"\d+", driver):
+                gpu["driver"] = driver
+            gpus.append(gpu)
     return gpus
+
+
+# Os mesmos limites de scripts/torch-choice.sh: o PyTorch com GPU do PyPI é CUDA 13.
+TORCH_CUDA_MIN_CAPABILITY = 7.5
+TORCH_CUDA_MIN_DRIVER = 580
+
+
+def _gpu_torch_tip(gpus: list[dict[str, Any]], gpu_install_failed: bool) -> str:
+    """Por que o PyTorch instalado é só-CPU e o que fazer, coerente com o instalador."""
+    gpu = max(gpus, key=lambda g: g["compute_cap"] or 0)
+    name, cap, driver = gpu["name"], gpu["compute_cap"], gpu["driver"]
+    if cap is not None and cap < TORCH_CUDA_MIN_CAPABILITY:
+        return (f"A placa {name} é anterior às RTX 20 / GTX 16 e o PyTorch atual não a suporta: "
+                "o SAM 2 roda na CPU (funciona, só mais devagar).")
+    if driver and int(driver.split(".")[0]) < TORCH_CUDA_MIN_DRIVER:
+        return (f"O driver NVIDIA {driver} é antigo para o PyTorch com GPU: atualize o driver da placa {name} "
+                "no Windows e rode o instalador de novo para o SAM 2 usar a placa.")
+    if gpu_install_failed:
+        return ("A versão do PyTorch para a placa NVIDIA já falhou neste computador e ficou a só-CPU. "
+                "Para tentar de novo (precisa de ~12 GB livres), no Ubuntu: "
+                "cd ~/AI-Video-Studio && TORCH=cuda bash scripts/setup.sh")
+    return (f"Há placa NVIDIA ({name}), mas o PyTorch instalado é só-CPU (o SAM 2 funciona, só mais devagar). "
+            "Para usar a placa, libere ~12 GB no disco e rode o instalador de novo.")
 
 
 def _tool(name: str, version_args: list[str]) -> dict[str, Any]:
@@ -158,6 +190,8 @@ def collect(settings: Settings | None = None) -> dict[str, Any]:
         "ml": {
             "torch": _torch_info(),
             "sam2_installed": importlib.util.find_spec("sam2") is not None,
+            # Marcador do scripts/torch-choice.sh dentro do venv: a versão com GPU já falhou.
+            "torch_gpu_failed": (Path(sys.prefix) / ".torch-gpu-falhou").exists(),
             "sam2_model": settings.sam2_model,
             "sam2_checkpoint": str(ckpt),
             "sam2_checkpoint_present": ckpt.exists(),
@@ -197,18 +231,15 @@ def recommendations(r: dict[str, Any]) -> list[str]:
     else:
         tips.append(f"GPU com {best_vram} GB: dá para testar o Wan 2.2 Animate quantizado (GGUF) localmente.")
     if gpus and ml["torch"].get("installed") and not ml["torch"].get("cuda"):
-        tips.append(
-            "Há GPU NVIDIA, mas o PyTorch instalado é só-CPU (o SAM 2 funciona, só mais devagar). "
-            "Para usar a placa (driver 580+, ~12 GB livres): TORCH=cuda bash scripts/setup.sh"
-        )
+        tips.append(_gpu_torch_tip(gpus, bool(ml.get("torch_gpu_failed"))))
     if not ml["torch"].get("installed"):
         tips.append("PyTorch não instalado: rode scripts/setup.sh.")
     if not ml["sam2_installed"]:
         tips.append("SAM 2 não instalado: rode scripts/setup.sh.")
     if not ml["sam2_checkpoint_present"]:
         tips.append("Checkpoint do SAM 2.1 ausente: rode `studio models download`.")
-    if r["disk"]["free_gb"] < 30:
-        tips.append(f"Só {r['disk']['free_gb']} GB livres: os modelos das próximas fases ocupam 20–40 GB.")
+    if r["disk"]["free_gb"] < 5:
+        tips.append(f"Só {r['disk']['free_gb']} GB livres: libere espaço para os vídeos e as máscaras dos projetos.")
     return tips
 
 

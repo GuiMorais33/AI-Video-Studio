@@ -15,6 +15,20 @@ free_gb() {
   df -Pk "$1" | awk 'NR == 2 { printf "%d", $4 / 1048576 }'
 }
 
+# GB livres para o projeto. No WSL, o "df" do Ubuntu mostra o tamanho virtual do disco dele
+# (~1 TB); o limite real é o disco do Windows onde ele fica: /mnt/c, ou a letra que o
+# instalador do Windows mediu (AIVS_WIN_DRIVE). Vale o menor dos dois.
+#   disk_free_gb <pasta do projeto>
+disk_free_gb() {
+  local free windows drive="${AIVS_WIN_DRIVE:-c}" mounts="${AIVS_WSL_MOUNTS:-/mnt}"
+  free="$(free_gb "$1")"
+  if [[ -n "${WSL_DISTRO_NAME:-}" && -d "$mounts/$drive" ]]; then
+    windows="$(free_gb "$mounts/$drive" 2>/dev/null || true)"
+    if [[ "$windows" =~ ^[0-9]+$ ]] && (( windows < free )); then free="$windows"; fi
+  fi
+  echo "$free"
+}
+
 # Imprime por que NÃO usar a GPU; não imprime nada quando a GPU pode ser usada.
 #   cuda_blocker <GB livres>
 cuda_blocker() {
@@ -45,22 +59,38 @@ cuda_blocker() {
   fi
 }
 
+# Marca, dentro do venv, que a versão com GPU já falhou no modo automático: as próximas
+# execuções (atualizações) não baixam de novo ~3 GB. TORCH=cuda tenta mesmo assim.
+torch_gpu_failed_marker() {
+  echo "$(dirname "$(dirname "$1")")/.torch-gpu-falhou"
+}
+
 # Instala o PyTorch. Com auto=1, se a versão com GPU falhar (download, disco), instala a só-CPU.
 #   install_torch <python do venv> <cuda|cpu> <auto: 0|1>
 install_torch() {
-  local py="$1" mode="$2" auto="$3" partial=()
+  local py="$1" mode="$2" auto="$3" partial=() marker
+  marker="$(torch_gpu_failed_marker "$py")"
   # Sem cache: o pip não guarda uma segunda cópia dos pacotes grandes.
   if [[ "$mode" == "cpu" ]]; then
     "$py" -m pip install --quiet --no-cache-dir torch torchvision --index-url "$TORCH_CPU_INDEX"
     return
   fi
-  if (( ! auto )) && "$py" -c "import sys, torch; sys.exit('+cpu' not in torch.__version__)" 2>/dev/null; then
-    # Pedido explícito da versão com GPU: troca a só-CPU instalada antes.
+  if "$py" -c "import sys, torch; sys.exit('+cpu' not in torch.__version__)" 2>/dev/null; then
+    if (( auto )) && [[ -e "$marker" ]]; then
+      echo "Mantendo o PyTorch só-CPU: a versão para a placa NVIDIA já falhou antes neste computador."
+      return 0
+    fi
+    # Agora a placa pode ser usada (driver atualizado, espaço liberado ou TORCH=cuda):
+    # troca a só-CPU instalada, que o pip aceitaria como "já instalado".
     "$py" -m pip uninstall --quiet -y torch torchvision
   fi
-  "$py" -m pip install --quiet --no-cache-dir torch torchvision && return
+  if "$py" -m pip install --quiet --no-cache-dir torch torchvision; then
+    rm -f "$marker"
+    return 0
+  fi
   (( auto )) || return 1
   echo "A versão para a placa NVIDIA não instalou; instalando a versão só-CPU."
+  touch "$marker"
   # Tira o que ficou pela metade da versão CUDA; senão o pip acha que o torch já está instalado.
   mapfile -t partial < <("$py" -m pip list --format=freeze 2>/dev/null \
     | grep -Eo '^(torch|torchvision|triton|nvidia-[A-Za-z0-9_.-]+|cuda-[A-Za-z0-9_.-]+)==' | sed 's/==$//')

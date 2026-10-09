@@ -115,20 +115,30 @@ if (-not $user -or $user -eq "root") {
 Write-Host "Usuario do ${Distro}: $user"
 
 # --- 3. Espaco em disco ----------------------------------------------------
-# So-CPU: ~5 GB. Com a placa NVIDIA, o PyTorch baixa ~3 GB e ocupa ~7 GB instalado.
+# Instalar do zero (so-CPU): ~5 GB. Com a placa NVIDIA, o PyTorch baixa ~3 GB e ocupa ~7 GB.
+# Atualizar uma instalacao que ja existe precisa de pouco: 1 GB.
 Write-Step "Verificando espaco em disco"
-$torchEnv = ""
+$setupEnv = ""
 $space = Get-WslFreeGB $Distro
 if ($space) {
     Write-Host "Livre no disco $($space.Letter): (onde fica o $Distro): $($space.GB) GB"
-    if ($space.GB -lt 5) {
-        Stop-Installer ("Pouco espaco no disco $($space.Letter): ($($space.GB) GB livres). O AI Video Studio precisa de pelo menos 5 GB " +
+    # O setup.sh mede o mesmo disco por /mnt/<letra>: de dentro do Ubuntu o "df" so ve o disco virtual.
+    $setupEnv = "AIVS_WIN_DRIVE=" + $space.Letter.ToLower() + " "
+    & wsl.exe -d $Distro -e bash -lc "test -x ~/AI-Video-Studio/engine/.venv/bin/studio"
+    $alreadyInstalled = ($LASTEXITCODE -eq 0)
+    $minGB = 5
+    if ($alreadyInstalled) { $minGB = 1 }
+    if ($space.GB -lt $minGB) {
+        Stop-Installer ("Pouco espaco no disco $($space.Letter): ($($space.GB) GB livres). O AI Video Studio precisa de pelo menos $minGB GB " +
             "(12 GB para usar a placa NVIDIA). Libere espaco (Lixeira, Downloads, Configuracoes > Sistema > Armazenamento) " +
             "e rode este instalador de novo.")
     }
     if ($space.GB -lt 12) {
-        Write-Host "Menos de 12 GB livres: instalando o PyTorch so-CPU (~200 MB), mesmo se houver placa NVIDIA."
-        $torchEnv = "TORCH=cpu "
+        # Numa instalacao que ja existe, TORCH=cpu nao muda nada: o PyTorch instalado fica.
+        if (-not $alreadyInstalled) {
+            Write-Host "Menos de 12 GB livres: instalando o PyTorch so-CPU (~200 MB), mesmo se houver placa NVIDIA."
+        }
+        $setupEnv += "TORCH=cpu "
     }
 } else {
     Write-Host "Nao foi possivel medir o espaco livre; seguindo assim mesmo."
@@ -141,7 +151,7 @@ $setup = "set -e; " +
     "if ! command -v git >/dev/null; then sudo apt-get update && sudo apt-get install -y git; fi; " +
     "if [ -d ~/AI-Video-Studio/.git ]; then git -C ~/AI-Video-Studio pull --ff-only; " +
     "else git clone $RepoUrl ~/AI-Video-Studio; fi; " +
-    "cd ~/AI-Video-Studio && " + $torchEnv + "bash scripts/setup.sh"
+    "cd ~/AI-Video-Studio && " + $setupEnv + "bash scripts/setup.sh"
 # Chamado direto (fora de funcao e sem capturar a saida): o progresso aparece na tela e o
 # "[sudo] password" funciona no console. Sem aspas duplas em $setup: o PowerShell 5.1 as remove.
 & wsl.exe -d $Distro -e bash -lc $setup

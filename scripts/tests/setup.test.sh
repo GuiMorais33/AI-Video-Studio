@@ -35,6 +35,7 @@ run_setup() {  # run_setup <GB livres> [VAR=valor...]: roda numa cópia do proje
 #!/usr/bin/env bash
 echo "python $* TMPDIR=$TMPDIR" >>"$CALLS"
 [[ "$*" == "-m pip install"* && "$*" != *whl/cpu* && "$*" == *" torch torchvision"* && "${FAIL_CUDA:-0}" == 1 ]] && exit 1
+[[ "$*" == "-c import torch" && "${FAKE_TORCH_OK:-0}" == 1 ]] && exit 0
 [[ "$*" == "-c "* ]] && exit 1
 exit 0
 PYTHON
@@ -76,6 +77,11 @@ run_setup 3
 check "para com erro" grep -qx 1 "$LAST/status"
 check "explica quanto espaço falta" grep -q 'pouco espaço em disco (3 GB livres' "$LAST/out"
 check "não chega a instalar nada" not grep -q 'pip install' "$LAST/calls"
+
+echo "Atualização de uma instalação que já existe, com pouco espaço"
+run_setup 3 FAKE_TORCH_OK=1
+check "segue (1 GB basta para atualizar)" grep -qx 0 "$LAST/status"
+check "fica na só-CPU por falta de espaço para a GPU" grep -q '==> Instalando PyTorch (cpu)' "$LAST/out"
 
 if (( failures )); then echo "$failures verificação(ões) falharam"; exit 1; fi
 echo "Todas as verificações passaram"

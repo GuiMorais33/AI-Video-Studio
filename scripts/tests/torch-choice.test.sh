@@ -53,7 +53,10 @@ check "consulta ilegível usa CPU" 50 "não foi possível ler"
 
 # python falso do venv: registra as chamadas do pip; a instalação CUDA falha com FAIL_CUDA=1
 # e INSTALLED simula a versão do torch já instalada.
-cat >"$STUBS/python" <<'PYTHON'
+mkdir -p "$STUBS/venv/bin"
+PY="$STUBS/venv/bin/python"
+MARKER="$STUBS/venv/.torch-gpu-falhou"
+cat >"$PY" <<'PYTHON'
 #!/usr/bin/env bash
 echo "$*" >>"$CALLS"
 case "$*" in
@@ -64,12 +67,12 @@ case "$*" in
 esac
 exit 0
 PYTHON
-chmod +x "$STUBS/python"
+chmod +x "$PY"
 export CALLS="$STUBS/calls"
 
 run_install() {  # run_install <modo> <auto>: status e as chamadas do pip, uma por linha
   : >"$CALLS"
-  install_torch "$STUBS/python" "$1" "$2" >/dev/null
+  install_torch "$PY" "$1" "$2" >/dev/null
   echo "status=$?"
   cat "$CALLS"
 }
@@ -87,16 +90,40 @@ out="$(run_install cpu 1)"
 expect "só-CPU usa o índice da CPU, sem cache" "$out" "install --quiet --no-cache-dir torch torchvision --index-url .*/whl/cpu"
 out="$(FAIL_CUDA=0 run_install cuda 1)"
 expect "GPU instala do PyPI e para" "$out" "^status=0" "whl/cpu"
+rm -f "$MARKER"
 out="$(FAIL_CUDA=1 run_install cuda 1)"
 expect "GPU falhou: remove a instalação pela metade" "$out" "uninstall --quiet -y torch triton nvidia-cublas$"
 expect "GPU falhou: não remove outros pacotes" "$out" "^status=0" "uninstall.*(numpy|torchao)"
 expect "GPU falhou: instala a só-CPU" "$out" "whl/cpu"
+if [[ -e "$MARKER" ]]; then echo "  ok: GPU falhou: marca para não baixar ~3 GB de novo"; else
+  echo "  FALHOU: marcador não criado"; failures=$((failures + 1)); fi
+out="$(INSTALLED=2.14.1+cpu run_install cuda 1)"
+expect "com o marcador, o automático mantém a só-CPU sem baixar nada" "$out" "^status=0" "pip (un)?install"
+out="$(INSTALLED=2.14.1+cpu run_install cuda 0)"
+expect "TORCH=cuda tenta mesmo com o marcador" "$out" "uninstall --quiet -y torch torchvision$"
+if [[ ! -e "$MARKER" ]]; then echo "  ok: GPU instalada apaga o marcador"; else
+  echo "  FALHOU: marcador ficou depois de instalar a GPU"; failures=$((failures + 1)); fi
 out="$(FAIL_CUDA=1 run_install cuda 0)"
 expect "GPU forçada que falha devolve erro, sem cair para CPU" "$out" "^status=1" "whl/cpu"
 out="$(INSTALLED=2.14.1+cpu run_install cuda 0)"
 expect "GPU forçada troca a só-CPU instalada" "$out" "uninstall --quiet -y torch torchvision$"
 out="$(INSTALLED=2.14.1+cpu run_install cuda 1)"
-expect "automático não troca a só-CPU que já funciona" "$out" "^status=0" "uninstall"
+expect "automático troca a só-CPU quando a placa passa a poder ser usada" "$out" "uninstall --quiet -y torch torchvision$"
+
+echo "Espaço em disco"
+cat >"$STUBS/df" <<'DF'
+#!/usr/bin/env bash
+case "$*" in *mnt*/d) kb=$((8 * 1048576)) ;; *) kb=$((900 * 1048576)) ;; esac
+printf 'Filesystem 1024-blocks Used Available Capacity Mounted\nfake 1 1 %s 1%% /\n' "$kb"
+DF
+chmod +x "$STUBS/df"
+mkdir -p "$STUBS/mnt/d"
+got="$(PATH="$STUBS:/usr/bin:/bin" WSL_DISTRO_NAME=Ubuntu AIVS_WSL_MOUNTS="$STUBS/mnt" AIVS_WIN_DRIVE=d disk_free_gb "$ROOT")"
+if [[ "$got" == 8 ]]; then echo "  ok: no WSL vale o espaço do disco do Windows (8 GB), não o virtual (900 GB)"; else
+  echo "  FALHOU: disk_free_gb no WSL -> $got"; failures=$((failures + 1)); fi
+got="$(PATH="$STUBS:/usr/bin:/bin" WSL_DISTRO_NAME="" disk_free_gb "$ROOT")"
+if [[ "$got" == 900 ]]; then echo "  ok: fora do WSL vale o disco do projeto"; else
+  echo "  FALHOU: disk_free_gb fora do WSL -> $got"; failures=$((failures + 1)); fi
 
 echo "Outros"
 if [[ "$(free_gb "$ROOT")" =~ ^[0-9]+$ ]]; then

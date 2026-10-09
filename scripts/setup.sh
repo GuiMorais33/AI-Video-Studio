@@ -22,7 +22,8 @@ SAM2_DIR="$ROOT/engine/.vendor/sam2"
 SAM2_COMMIT="2b90b9f5ceec907a1c18123530e92e794ad901a4"
 TORCH="${TORCH:-auto}"
 SAM2_MODEL="${SAM2_MODEL:-tiny}"
-# Mínimo para o caminho só-CPU: ambiente Python, painel, checkpoint e alguns projetos.
+# Mínimo para instalar do zero pelo caminho só-CPU: ambiente Python, painel, checkpoint e
+# alguns projetos. Para atualizar uma instalação que já existe, 1 GB basta.
 MIN_FREE_GB=5
 
 # Temporários no disco do projeto: o /tmp do Ubuntu pode ficar na memória (poucos GB), e o pip
@@ -64,8 +65,11 @@ sys.exit(0 if sys.version_info >= (3, 10) else 1)
 PY
 
 step "Verificando espaço em disco"
-FREE_GB="$(free_gb "$ROOT")"
-echo "Livre no disco do projeto: $FREE_GB GB"
+FREE_GB="$(disk_free_gb "$ROOT")"
+echo "Livre para o projeto: $FREE_GB GB"
+if [[ -x "$VENV/bin/python" ]] && "$VENV/bin/python" -c "import torch" 2>/dev/null; then
+  MIN_FREE_GB=1
+fi
 if (( FREE_GB < MIN_FREE_GB )); then
   fail "pouco espaço em disco ($FREE_GB GB livres; são necessários pelo menos $MIN_FREE_GB GB).
 No Windows, o Ubuntu guarda os arquivos dentro do disco C: — libere espaço nele e rode de novo."

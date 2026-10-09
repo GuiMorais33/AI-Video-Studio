@@ -30,6 +30,11 @@ function global:wsl.exe {
     if ($args[0] -eq "-d" -and $args[2] -eq "-e") {
         $command = $args[-1]
         if ($command -eq "id -un") { return $S.User }
+        if ($command -like "test -x *") {  # instalacao anterior do estudio?
+            $S.Probed = $true
+            if ($S.Existing) { $global:LASTEXITCODE = 0 } else { $global:LASTEXITCODE = 1 }
+            return
+        }
         $S.Setup = $command
         $global:LASTEXITCODE = $S.SetupCode
         return "saida do setup"
@@ -83,6 +88,7 @@ function Invoke-Scenario([string]$name, [hashtable]$state) {
     $defaults = @{
         Installed = $false; InstallWorks = $true; Version = "2"; User = "root"; SetupCode = 0; FreeGB = 50
         Calls = @(); StartProcess = @(); Prompts = @(); Setup = $null; Shortcut = $null; DriveQueried = $null
+        Existing = $false; Probed = $false
     }
     foreach ($key in $state.Keys) { $defaults[$key] = $state[$key] }
     $global:S = [pscustomobject]$defaults
@@ -104,7 +110,7 @@ Check ($global:S.Setup -match "bash scripts/setup.sh") "roda o setup"
 Check ($global:S.Setup -notmatch '"') "comando do setup sem aspas duplas (PowerShell 5.1 as remove)"
 Check ($global:S.DriveQueried -eq "D") "mede o disco onde fica o Ubuntu (registro do WSL): '$($global:S.DriveQueried)'"
 Check ($r.Output -match "Livre no disco D: .*50 GB") "mostra o espaco livre"
-Check ($global:S.Setup -notmatch "TORCH=") "com espaco, deixa o setup escolher o PyTorch"
+Check ($global:S.Setup -match "&& AIVS_WIN_DRIVE=d bash scripts/setup.sh$") "passa a letra do disco ao setup e deixa ele escolher o PyTorch"
 Check ($null -ne $global:S.Shortcut -and $global:S.Shortcut.Path -like "*AI Video Studio.lnk") "cria o atalho na Area de Trabalho"
 $launcher = Join-Path $env:LOCALAPPDATA "AIVideoStudio/abrir-estudio.ps1"
 Check (Test-Path $launcher) "grava o lancador"
@@ -131,18 +137,24 @@ Check ($r.Output -match "Reinicie o computador") "pede para reiniciar"
 # 4) Pouco espaco no disco do Ubuntu: para antes do setup, explicando o que liberar.
 $r = Invoke-Scenario "pouco espaco" @{ Installed = $true; User = "guimo"; FreeGB = 3.2 }
 Check ($r.Exit -eq 1) "sai com codigo 1"
-Check ($r.Output -match "Pouco espaco no disco D: \(3\.2 GB livres\)") "explica quanto espaco falta"
+Check ($r.Output -match "Pouco espaco no disco D: \(3\.2 GB livres\)\. O AI Video Studio precisa de pelo menos 5 GB") "explica quanto espaco falta"
 Check ($null -eq $global:S.Setup) "nao roda o setup"
+
+# 4b) Pouco espaco, mas o estudio ja esta instalado: atualizar precisa de pouco, entao segue.
+$r = Invoke-Scenario "pouco espaco, atualizacao" @{ Installed = $true; User = "guimo"; FreeGB = 3.2; Existing = $true }
+Check $global:S.Probed "confere se o estudio ja esta instalado"
+Check ($r.Output -match "Pronto!") "atualiza normalmente"
+Check ($global:S.Setup -match "&& AIVS_WIN_DRIVE=d TORCH=cpu bash scripts/setup.sh$") "setup com a letra do disco e TORCH=cpu"
 
 # 5) Espaco medio: instala o PyTorch so-CPU (~200 MB) em vez do pacote da placa NVIDIA (~7 GB).
 $r = Invoke-Scenario "espaco medio" @{ Installed = $true; User = "guimo"; FreeGB = 8 }
-Check ($global:S.Setup -match "&& TORCH=cpu bash scripts/setup.sh$") "passa TORCH=cpu ao setup: '$($global:S.Setup)'"
+Check ($global:S.Setup -match "&& AIVS_WIN_DRIVE=d TORCH=cpu bash scripts/setup.sh$") "passa TORCH=cpu ao setup: '$($global:S.Setup)'"
 Check ($r.Output -match "Pronto!") "termina com sucesso"
 
 # 6) Sem como medir o espaco: segue normalmente.
 $r = Invoke-Scenario "espaco desconhecido" @{ Installed = $true; User = "guimo"; FreeGB = $null }
 Check ($r.Output -match "Nao foi possivel medir") "avisa que nao mediu"
-Check ($global:S.Setup -match "bash scripts/setup.sh$" -and $global:S.Setup -notmatch "TORCH=") "roda o setup sem TORCH"
+Check ($global:S.Setup -match "&& bash scripts/setup.sh$") "roda o setup sem variaveis extras"
 
 if ($script:failures) { Write-Host "$($script:failures) verificacao(oes) falharam" -ForegroundColor Red; exit 1 }
 Write-Host "Todas as verificacoes passaram" -ForegroundColor Green

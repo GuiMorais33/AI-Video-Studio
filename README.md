@@ -65,7 +65,8 @@ O instalador:
   - cria `engine/.venv`;
   - instala o PyTorch:
     - com GPU quando há placa NVIDIA RTX 20 / GTX 16 ou mais nova, driver 580+ e 12 GB livres;
-    - só-CPU nos outros casos, ou se o download da versão com GPU falhar;
+    - só-CPU nos outros casos, ou se o download da versão com GPU falhar. Depois de atualizar o
+      driver ou liberar espaço, rodar o instalador de novo troca para a versão com GPU;
   - instala o SAM 2 oficial da Meta numa versão fixa;
   - baixa o checkpoint **SAM 2.1 Tiny** (~156 MB);
   - instala o Node.js 22 se o do sistema for antigo;
