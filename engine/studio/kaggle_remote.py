@@ -39,26 +39,45 @@ class KaggleError(RuntimeError):
     pass
 
 
+def _legacy_file() -> Path:
+    return Path.home() / ".kaggle" / "kaggle.json"
+
+
 def token_status() -> dict[str, Any]:
     if os.environ.get("KAGGLE_API_TOKEN"):
         return {"configured": True, "source": "variável KAGGLE_API_TOKEN"}
-    if TOKEN_FILE.exists():
-        return {"configured": True, "source": str(TOKEN_FILE)}
-    legacy = Path.home() / ".kaggle" / "kaggle.json"
-    if legacy.exists():
-        return {"configured": True, "source": str(legacy)}
+    for path in (TOKEN_FILE, _legacy_file()):
+        if path.exists():
+            return {"configured": True, "source": str(path)}
     return {"configured": False, "source": None}
 
 
-def save_token(token: str) -> None:
-    token = token.strip()
-    if not re.fullmatch(r"[A-Za-z0-9_\-\.]{20,512}", token):
-        raise KaggleError("Token inválido. Copie o token gerado em kaggle.com > Settings > API.")
-    TOKEN_FILE.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(TOKEN_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+def _write_private(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w") as f:
-        f.write(token)
-    os.chmod(TOKEN_FILE, 0o600)
+        f.write(content)
+    os.chmod(path, 0o600)
+
+
+def save_token(token: str) -> Path:
+    """Aceita o token copiado de kaggle.com > Settings > API ou o conteúdo do kaggle.json."""
+    text = token.strip()
+    if text.startswith("{"):
+        try:
+            data = json.loads(text)
+        except ValueError:
+            raise KaggleError("O conteúdo colado do kaggle.json não é um JSON válido.") from None
+        username, key = str(data.get("username", "")), str(data.get("key", ""))
+        if not re.fullmatch(r"[A-Za-z0-9_\-\.]{1,64}", username) or not re.fullmatch(r"[A-Za-z0-9]{20,128}", key):
+            raise KaggleError("O kaggle.json precisa ter os campos username e key.")
+        path = _legacy_file()
+        _write_private(path, json.dumps({"username": username, "key": key}))
+        return path
+    if not re.fullmatch(r"[A-Za-z0-9_\-\.]{20,512}", text):
+        raise KaggleError("Token inválido. Copie o token gerado em kaggle.com > Settings > API.")
+    _write_private(TOKEN_FILE, text)
+    return TOKEN_FILE
 
 
 def _api():
@@ -81,11 +100,11 @@ def _api():
 
 def save_and_check_token(token: str) -> dict[str, Any]:
     """Salva o token e confere a conta; um token recusado não fica salvo."""
-    save_token(token)
+    path = save_token(token)
     try:
         return check_account()
     except KaggleError:
-        TOKEN_FILE.unlink(missing_ok=True)
+        path.unlink(missing_ok=True)
         raise
 
 

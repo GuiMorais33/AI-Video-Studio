@@ -10,8 +10,11 @@ notebook roda lá **em lote**, sem interface web e sem túnel, que é o uso perm
 2. Verifique o telefone em **Settings → Phone verification**. Sem isso, não há GPU nem internet
    no notebook.
 3. Para o modo automático, gere o token em **Settings → API → Generate New Token** e copie.
-   No estúdio, etapa 4, cole em **Token do Kaggle → Salvar token**.
-   - O token fica só no seu computador, em `~/.kaggle/access_token` dentro do Ubuntu.
+   No estúdio, etapa 4, cole e clique em **Salvar token**.
+   - Se o Kaggle baixar um arquivo `kaggle.json` em vez de mostrar o token, abra o arquivo no
+     Bloco de Notas e cole o conteúdo inteiro, com as chaves `{ }`.
+   - O token fica só no seu computador, dentro do Ubuntu: em `~/.kaggle/access_token`, ou em
+     `~/.kaggle/kaggle.json` no caso do arquivo.
 
 ## Modo automático (recomendado)
 

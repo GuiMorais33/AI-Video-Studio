@@ -151,10 +151,10 @@ export function WanPanel({ project, locked, run }: Props) {
           {kaggle && !kaggle.configured ? (
             <>
               <p className="muted small">
-                Cole o token de API do Kaggle (kaggle.com → Settings → API → Generate New Token). Fica salvo só neste
-                computador.
+                Cole o token de API do Kaggle (kaggle.com → Settings → API → Generate New Token) ou, se o Kaggle
+                baixar um arquivo kaggle.json, o conteúdo dele. Fica salvo só neste computador.
               </p>
-              <input type="password" value={token} onChange={(e) => setToken(e.target.value)} placeholder="Token do Kaggle" />
+              <input type="password" value={token} onChange={(e) => setToken(e.target.value)} placeholder="Token ou conteúdo do kaggle.json" />
               <button disabled={locked || token.trim().length < 20} onClick={saveToken}>
                 Salvar token
               </button>

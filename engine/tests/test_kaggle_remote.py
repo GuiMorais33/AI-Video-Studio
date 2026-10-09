@@ -239,3 +239,31 @@ def test_rejected_token_is_not_kept(monkeypatch, tmp_path):
     with pytest.raises(kaggle_remote.KaggleError):
         kaggle_remote.save_and_check_token("KGAT_tokeninvalido0123456789abcdef")
     assert not (tmp_path / ".kaggle" / "access_token").exists()
+
+
+def test_accepts_kaggle_json_contents(monkeypatch, tmp_path):
+    monkeypatch.setattr(kaggle_remote, "TOKEN_FILE", tmp_path / ".kaggle" / "access_token")
+    monkeypatch.setattr(kaggle_remote.Path, "home", lambda: tmp_path)
+    monkeypatch.delenv("KAGGLE_API_TOKEN", raising=False)
+    pasted = '  {"username":"guimo","key":"0123456789abcdef0123456789abcdef"}\n'
+    path = kaggle_remote.save_token(pasted)
+    assert path == tmp_path / ".kaggle" / "kaggle.json"
+    assert json.loads(path.read_text()) == {"username": "guimo", "key": "0123456789abcdef0123456789abcdef"}
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    assert kaggle_remote.token_status() == {"configured": True, "source": str(path)}
+    with pytest.raises(kaggle_remote.KaggleError, match="username e key"):
+        kaggle_remote.save_token('{"username": "guimo"}')
+    with pytest.raises(kaggle_remote.KaggleError, match="JSON"):
+        kaggle_remote.save_token("{nao é json")
+
+
+def test_rejected_kaggle_json_is_not_kept(monkeypatch, tmp_path):
+    monkeypatch.setattr(kaggle_remote.Path, "home", lambda: tmp_path)
+
+    def refuse():
+        raise kaggle_remote.KaggleError("Não foi possível entrar no Kaggle.")
+
+    monkeypatch.setattr(kaggle_remote, "check_account", refuse)
+    with pytest.raises(kaggle_remote.KaggleError):
+        kaggle_remote.save_and_check_token('{"username":"x","key":"0123456789abcdef0123456789abcdef"}')
+    assert not (tmp_path / ".kaggle" / "kaggle.json").exists()

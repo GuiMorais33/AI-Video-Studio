@@ -9,7 +9,7 @@ relação ao plano original são duas. O teste do Wan Animate veio para a Fase 3
 
 | Fase | Entrega | Critério de conclusão | Status |
 |---|---|---|---|
-| 1. Ambiente | Estrutura do projeto, instalador, diagnóstico de hardware | `scripts/diagnose.ps1` e `studio diagnose` rodam no PC do usuário | Código pronto; falta rodar no Windows do usuário |
+| 1. Ambiente | Estrutura do projeto, instalador, diagnóstico de hardware | `scripts/diagnose.ps1` e `studio diagnose` rodam no PC do usuário | **Concluída:** o instalador de um clique (que roda o `studio diagnose` no fim) rodou no Windows do usuário em 09/10/2026 |
 | 2. SAM 2.1 | Selecionar pessoa com clique, rastrear, corrigir, exportar prévia | Rastrear uma pessoa por 5 s e corrigir as máscaras, com vídeo real | **Validada com pesos reais em 2 vídeos reais** (ver abaixo); vale repetir com um vídeo seu |
 | 3. Teste do Wan Animate | Notebook Kaggle que roda o Wan 2.2 Animate (replace) com diffusers, usando nossas máscaras ([guia](KAGGLE.md)) | Um clipe de 3–5 s com personagem substituído, gerado sem custo; tempo e qualidade anotados | Notebook pronto e testado na CPU com modelos minúsculos; **falta a 1ª execução numa T4 real (sua conta Kaggle)** |
 | 4. Integração | Envio do clipe + máscara + referência do ChatGPT para o Kaggle e retorno do resultado ao estúdio | Fluxo de ponta a ponta disparado pelo estúdio | Implementada (botão "Gerar no Kaggle", API simulada nos testes); valida junto com a Fase 3 |
