@@ -63,6 +63,12 @@ export interface KaggleStatus {
   running: Job | null;
 }
 
+export interface KaggleAccount {
+  username: string;
+  /** Cota semanal de GPU; null quando o Kaggle não informa. */
+  quota: { gpu_hours_used: number; gpu_hours_total: number; refresh: string | null } | null;
+}
+
 export interface WanPackageOptions {
   resolution: "480p" | "720p";
   fps: number | null;
@@ -131,8 +137,8 @@ export const engine = {
   },
   wanPackage: (id: string, options: WanPackageOptions) => request<Job>(`/projects/${id}/wan-package`, json(options)),
   kaggleStatus: () => request<KaggleStatus>("/kaggle"),
-  saveKaggleToken: (token: string) =>
-    request<{ username: string; quota: string | null }>("/kaggle/token", json({ token })),
+  kaggleAccount: () => request<KaggleAccount>("/kaggle/account"),
+  saveKaggleToken: (token: string) => request<KaggleAccount>("/kaggle/token", json({ token })),
   runOnKaggle: (id: string) => request<Job>(`/projects/${id}/kaggle`, { method: "POST" }),
   uploadWanResult: (id: string, file: File) => {
     const form = new FormData();

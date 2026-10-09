@@ -335,6 +335,11 @@ def create_app(
             "running": db.active_job(None, kinds=REMOTE_KINDS),
         }
 
+    @app.get("/kaggle/account")
+    def kaggle_account() -> dict[str, Any]:
+        """Usuário e cota semanal de GPU (consulta o Kaggle)."""
+        return kaggle_remote.check_account()
+
     @app.post("/kaggle/token")
     def kaggle_token(body: KaggleTokenIn) -> dict[str, Any]:
         return kaggle_remote.save_and_check_token(body.token)

@@ -1,7 +1,15 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { KAGGLE_GUIDE_URL, type KaggleStatus, type Project, engine, fileUrl, referenceUrl } from "@/lib/engine";
+import {
+  KAGGLE_GUIDE_URL,
+  type KaggleAccount,
+  type KaggleStatus,
+  type Project,
+  engine,
+  fileUrl,
+  referenceUrl,
+} from "@/lib/engine";
 
 interface Props {
   project: Project;
@@ -17,7 +25,7 @@ export function WanPanel({ project, locked, run }: Props) {
   const [fps, setFps] = useState<string>("16");
   const [prompt, setPrompt] = useState("");
   const [kaggle, setKaggle] = useState<KaggleStatus | null>(null);
-  const [kaggleUser, setKaggleUser] = useState<string | null>(null);
+  const [account, setAccount] = useState<KaggleAccount | null>(null);
   const [token, setToken] = useState("");
   const refInput = useRef<HTMLInputElement>(null);
   const resultInput = useRef<HTMLInputElement>(null);
@@ -35,11 +43,14 @@ export function WanPanel({ project, locked, run }: Props) {
   useEffect(() => {
     engine.kaggleStatus().then(setKaggle, () => undefined);
   }, [remoteJob?.id]);
+  // Usuário e cota de GPU: ao abrir e depois de cada geração no Kaggle.
+  useEffect(() => {
+    if (kaggle?.configured) engine.kaggleAccount().then(setAccount, () => undefined);
+  }, [kaggle?.configured, lastKaggle?.updated_at]);
 
   function saveToken() {
     run("Conectando ao Kaggle…", async () => {
-      const account = await engine.saveKaggleToken(token);
-      setKaggleUser(account.username);
+      setAccount(await engine.saveKaggleToken(token));
       setToken("");
       setKaggle(await engine.kaggleStatus());
     });
@@ -162,8 +173,16 @@ export function WanPanel({ project, locked, run }: Props) {
           ) : (
             kaggle && (
               <p className="muted small">
-                Kaggle conectado{kaggleUser ? ` como ${kaggleUser}` : ""}. A geração roda numa GPU T4 grátis
+                Kaggle conectado{account ? ` como ${account.username}` : ""}. A geração roda numa GPU T4 grátis
                 (12 a 40 min) e o resultado volta sozinho para cá.
+                {account?.quota && (
+                  <>
+                    {" "}
+                    GPU nesta semana: {formatHours(account.quota.gpu_hours_used)} de{" "}
+                    {formatHours(account.quota.gpu_hours_total)} usadas
+                    {account.quota.refresh ? ` (renova em ${formatDate(account.quota.refresh)})` : ""}.
+                  </>
+                )}
               </p>
             )
           )}
@@ -221,4 +240,13 @@ export function WanPanel({ project, locked, run }: Props) {
       )}
     </section>
   );
+}
+
+function formatHours(hours: number): string {
+  return `${hours.toLocaleString("pt-BR", { maximumFractionDigits: 1 })} h`;
+}
+
+function formatDate(isoDate: string): string {
+  const [year, month, day] = isoDate.split("-");
+  return `${day}/${month}/${year}`;
 }

@@ -267,3 +267,15 @@ def test_rejected_kaggle_json_is_not_kept(monkeypatch, tmp_path):
     with pytest.raises(kaggle_remote.KaggleError):
         kaggle_remote.save_and_check_token('{"username":"x","key":"0123456789abcdef0123456789abcdef"}')
     assert not (tmp_path / ".kaggle" / "kaggle.json").exists()
+
+
+def test_quota_summary_reads_durations_with_days():
+    # Formato do kagglesdk: timedelta + datetime. O texto da resposta mostra "21600s" para 30 h.
+    from datetime import datetime, timedelta
+
+    quota = SimpleNamespace(
+        quota_refresh_time=datetime(2026, 10, 10),
+        gpu_quota=SimpleNamespace(time_used=timedelta(hours=1, minutes=30), total_time_allowed=timedelta(days=1, hours=6)),
+    )
+    assert kaggle_remote.quota_summary(quota) == {"gpu_hours_used": 1.5, "gpu_hours_total": 30.0, "refresh": "2026-10-10"}
+    assert kaggle_remote.quota_summary(SimpleNamespace()) is None

@@ -1,8 +1,9 @@
 # Gerar o personagem no Kaggle (GPU grátis)
 
 O Wan 2.2 Animate precisa de uma GPU que o seu PC não tem. O Kaggle empresta de graça uma
-**GPU T4 x2**: cerca de 30 h por semana, em sessões de até 12 h. O estúdio prepara tudo e o
-notebook roda lá **em lote**, sem interface web e sem túnel, que é o uso permitido.
+**GPU T4 x2**: 30 h por semana (renova no sábado, 00:00 UTC), em sessões de até 12 h. O estúdio
+prepara tudo e o notebook roda lá **em lote**, sem interface web e sem túnel, que é o uso
+permitido. Na etapa 4, o estúdio mostra quantas horas você já usou na semana.
 
 ## Uma vez só: preparar a conta
 

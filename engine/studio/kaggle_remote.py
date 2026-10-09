@@ -108,14 +108,36 @@ def save_and_check_token(token: str) -> dict[str, Any]:
         raise
 
 
+def _hours(value: Any) -> float | None:
+    seconds = value.total_seconds() if hasattr(value, "total_seconds") else value
+    return round(float(seconds) / 3600, 1) if isinstance(seconds, (int, float)) else None
+
+
+def quota_summary(quota: Any) -> dict[str, Any] | None:
+    """Cota semanal de GPU. Lê os campos, não o texto: o texto do kagglesdk perde os dias
+    da duração (30 h aparecem como "21600s")."""
+    gpu = getattr(quota, "gpu_quota", None)
+    if gpu is None:
+        return None
+    used, total = _hours(getattr(gpu, "time_used", None)), _hours(getattr(gpu, "total_time_allowed", None))
+    if used is None or total is None:
+        return None
+    refresh = getattr(quota, "quota_refresh_time", None)
+    return {
+        "gpu_hours_used": used,
+        "gpu_hours_total": total,
+        "refresh": refresh.date().isoformat() if hasattr(refresh, "date") else None,
+    }
+
+
 def check_account() -> dict[str, Any]:
     api, user = _api()
     quota: Any = None
     try:
-        quota = api.quota_view()
+        quota = quota_summary(api.quota_view())
     except Exception:  # cota é informativa
         pass
-    return {"username": user, "quota": str(quota) if quota is not None else None}
+    return {"username": user, "quota": quota}
 
 
 def _status_name(response: Any) -> str:
