@@ -11,7 +11,8 @@ Referência (ChatGPT) ──► Wan 2.2 Animate, modo replacement (Fase 3) ◄�
                   FFmpeg: composição, áudio original, exportação MP4
 ```
 
-**Situação atual: Fases 1 e 2 prontas e validadas; Fase 3 pronta para o primeiro teste numa GPU.**
+**Situação atual: Fases 1, 2 e 3 validadas; a Fase 4 (botão do estúdio → Kaggle → resultado) funcionou de
+ponta a ponta pelo motor e falta só o teste com um vídeo seu.**
 
 - Fases 1 e 2, validadas com pesos reais do SAM 2.1 em vídeos reais:
   - preparo do vídeo;
@@ -24,8 +25,8 @@ Referência (ChatGPT) ──► Wan 2.2 Animate, modo replacement (Fase 3) ◄�
   - notebook do Kaggle (GPU grátis);
   - botão **Gerar no Kaggle**, que envia, roda e traz o resultado sozinho;
   - importação com o áudio original e comparativo antes/depois.
-  - Tudo foi testado na CPU com modelos minúsculos. Falta a primeira execução numa T4 de verdade,
-    pela sua conta Kaggle: veja [docs/KAGGLE.md](docs/KAGGLE.md).
+  - Testado numa T4 grátis do Kaggle (09/10/2026): um clipe de 4,8 s em 34 min, com pose, fundo e
+    iluminação fiéis ao vídeo. Tempos, qualidade e dicas em [docs/KAGGLE.md](docs/KAGGLE.md).
 
 O roteiro completo e o que foi revisado no plano original estão em
 [docs/ROADMAP.md](docs/ROADMAP.md) e [docs/AVALIACAO-DO-PLANO.md](docs/AVALIACAO-DO-PLANO.md).
@@ -96,7 +97,8 @@ Clone em `~/`, não em `/mnt/c/...`: o disco do Windows visto pelo WSL é bem ma
 5. **Exportar:** gera `preview.mp4`, `mask.mp4` e `masks.zip`, com comparativo antes/depois na
    página.
 6. **Personagem (Kaggle):**
-   - envie a imagem do personagem (criada no ChatGPT, corpo inteiro);
+   - envie a imagem do personagem (criada no ChatGPT, corpo inteiro) e, se quiser, descreva-o em
+     inglês (roupa, cores, materiais);
    - clique em **Gerar pacote para o Kaggle** e depois em **Gerar no Kaggle**;
    - o resultado volta com o áudio original e um comparativo lado a lado.
 

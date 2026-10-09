@@ -119,10 +119,14 @@ export function WanPanel({ project, locked, run }: Props) {
             </select>
           </label>
           <label>
-            Descrição do personagem (opcional)
+            Descrição do personagem (opcional, em inglês)
             <input value={prompt} maxLength={1000} onChange={(e) => setPrompt(e.target.value)}
-              placeholder="ex.: a cartoon astronaut dancing" />
+              placeholder="ex.: a cartoon astronaut in a white suit and orange helmet, dancing" />
           </label>
+          <p className="muted small">
+            Descrever roupa e materiais deixa o resultado mais fiel à imagem. O rosto sempre segue as expressões da
+            pessoa do vídeo: personagens sem rosto humano (robô, capacete fechado) tendem a ganhar um rosto humano.
+          </p>
           {activeJob ? (
             <div className="job">
               <div className="job-head">
@@ -174,7 +178,7 @@ export function WanPanel({ project, locked, run }: Props) {
             kaggle && (
               <p className="muted small">
                 Kaggle conectado{account ? ` como ${account.username}` : ""}. A geração roda numa GPU T4 grátis
-                (cerca de 40 min para 5 s de vídeo) e o resultado volta sozinho para cá.
+                (cerca de 35 min para 5 s de vídeo) e o resultado volta sozinho para cá.
                 {account?.quota && (
                   <>
                     {" "}

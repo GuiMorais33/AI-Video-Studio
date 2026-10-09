@@ -11,8 +11,8 @@ relação ao plano original são duas. O teste do Wan Animate veio para a Fase 3
 |---|---|---|---|
 | 1. Ambiente | Estrutura do projeto, instalador, diagnóstico de hardware | `scripts/diagnose.ps1` e `studio diagnose` rodam no PC do usuário | **Concluída:** o instalador de um clique (que roda o `studio diagnose` no fim) rodou no Windows do usuário em 09/10/2026 |
 | 2. SAM 2.1 | Selecionar pessoa com clique, rastrear, corrigir, exportar prévia | Rastrear uma pessoa por 5 s e corrigir as máscaras, com vídeo real | **Validada com pesos reais em 2 vídeos reais** (ver abaixo); vale repetir com um vídeo seu |
-| 3. Teste do Wan Animate | Notebook Kaggle que roda o Wan 2.2 Animate (replace) com diffusers, usando nossas máscaras ([guia](KAGGLE.md)) | Um clipe de 3–5 s com personagem substituído, gerado sem custo; tempo e qualidade anotados | Notebook pronto e testado na CPU com modelos minúsculos; **falta a 1ª execução numa T4 real (sua conta Kaggle)** |
-| 4. Integração | Envio do clipe + máscara + referência do ChatGPT para o Kaggle e retorno do resultado ao estúdio | Fluxo de ponta a ponta disparado pelo estúdio | Implementada (botão "Gerar no Kaggle", API simulada nos testes); valida junto com a Fase 3 |
+| 3. Teste do Wan Animate | Notebook Kaggle que roda o Wan 2.2 Animate (replace) com diffusers, usando nossas máscaras ([guia](KAGGLE.md)) | Um clipe de 3–5 s com personagem substituído, gerado sem custo; tempo e qualidade anotados | **Concluída em 09/10/2026:** clipe de 4,8 s gerado numa T4 grátis em 34 min, com vídeo real (ver abaixo) |
+| 4. Integração | Envio do clipe + máscara + referência do ChatGPT para o Kaggle e retorno do resultado ao estúdio | Fluxo de ponta a ponta disparado pelo estúdio | **Funcionou de ponta a ponta pelo motor** (mesmas funções do botão, 4 execuções reais); falta disparar pelo botão no seu PC com um vídeo seu |
 | 5. Refinamento | Composição com bordas suaves, ajuste de cor, upscale para 1080×1920, áudio original | Vídeo final pronto para Reels com comparativo antes/depois | A fazer |
 | 6. Interface definitiva | Biblioteca de personagens, histórico, fila de gerações | Fluxo aprovado executado só pela interface | A fazer |
 | Opcional | Refino de rosto (FaceFusion ou similar) | Somente com modelo de licença comercial confirmada | Em espera |
@@ -92,6 +92,26 @@ fica como rota reserva.
 - A máscara vem do estúdio (já corrigida por você). Recebe a mesma dilatação do oficial e blocos
   de 16 px, como no template oficial do ComfyUI.
 
-**Para a 1ª execução real:**
-- siga o [guia do Kaggle](KAGGLE.md);
-- traga o `relatorio.json`: tempos, VRAM, avisos e erro, se houver.
+### Validação numa T4 real (09/10/2026)
+
+Disparada pelo motor do estúdio, na conta Kaggle do usuário, com o vídeo vertical da Fase 2 (mulher
+dançando de capa amarela, 4,8 s a 16 fps, 464×832) e a imagem de referência oficial do Wan Animate
+(robô de suéter e gorro).
+
+| Execução | Resultado | O que mudou depois |
+|---|---|---|
+| 1 | Erro ao importar o diffusers | O `torchao` antigo da imagem do Kaggle é removido |
+| 2 | Pose na CPU; falta de memória no umT5 | onnxruntime-gpu acompanha o CUDA do PyTorch; pose na 2ª T4; texto sem gradiente |
+| 3 | **Vídeo gerado** (39 min) | Rosto do robô saiu humano |
+| 4 | **Vídeo gerado** (34 min), prompt descrevendo o robô | GPU 0 fixada depois da pose: passos 35% mais rápidos |
+
+**Qualidade:**
+- pose, fundo, chuva e iluminação muito fiéis ao vídeo;
+- roupa e cores da referência;
+- com o prompt, braços e mãos ficaram robóticos;
+- o rosto segue as expressões da pessoa original, então personagens sem rosto humano ganham um.
+
+**Ambiente medido:**
+- Python 3.13, PyTorch 2.11 + CUDA 12.8, 2× T4;
+- pico de 12,7 GB (texto) e 8,3 GB (geração) na GPU 0;
+- geração em 21 min: 6 passos de ~2,5 min mais o VAE.

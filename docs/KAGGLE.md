@@ -68,17 +68,31 @@ Pode deixar a página fechada enquanto roda. Só um notebook por vez.
 | ViTPose-H wholebody (repositório oficial) | ~2,5 GB |
 | LoRAs (lightx2v + relight, Kijai) | ~1 GB |
 
-**Tempo medido numa T4 (09/10/2026):** 39 min para um clipe de 4,8 s a 16 fps (77 quadros,
-464×832). Com as 30 h semanais, dá para uns 45 clipes por semana.
+**Tempo medido numa T4 (09/10/2026):** 34 min para um clipe de 4,8 s a 16 fps (77 quadros,
+464×832). Com as 30 h semanais, dá para uns 50 clipes por semana.
 
 | Etapa | Tempo |
 |---|---|
 | Instalação dos pacotes e ambiente | ~1,5 min |
-| Pose e rosto (ViTPose na 2ª T4) | 50 s |
+| Pose e rosto (ViTPose na 2ª T4) | 40 s |
 | Texto (download do umT5 e codificação) | 1,6 min |
-| Download e carga do Wan GGUF, VAE, CLIP e LoRAs | 5 min |
-| Geração: 6 passos de ~3,9 min cada | 23 min |
-| VAE: codificar o fundo e decodificar o vídeo | ~7 min |
+| Download e carga do Wan GGUF, VAE, CLIP e LoRAs | 5–6 min |
+| Geração: 6 passos de ~2,5 min cada | 15 min |
+| VAE (codificar o fundo e decodificar o vídeo) e o resto da geração | ~6 min |
+
+Memória: pico de 12,7 GB na GPU 0 com o umT5 e de 8,3 GB na geração (a T4 tem 14,6 GB).
+
+## Qualidade e dicas
+
+Nos testes (vídeo de uma mulher dançando na chuva, referência de um robô de suéter e gorro):
+
+- a pose, o fundo, a chuva e a iluminação ficam muito fiéis ao vídeo original;
+- a roupa e as cores vêm da imagem de referência;
+- **o rosto segue as expressões da pessoa do vídeo**: personagens com rosto (pessoa, desenho,
+  bicho com olhos e boca) funcionam bem; sem rosto humano (robô com câmera no lugar da cabeça,
+  capacete fechado) o Wan tende a desenhar um rosto humano, mesmo descrevendo o personagem;
+- descrever o personagem em inglês (roupa, materiais, cores) deixa o resultado mais fiel: no
+  teste, os braços e as mãos ficaram robóticos como na referência.
 
 ## Se der erro
 
@@ -101,20 +115,15 @@ O estúdio mostra o erro do `relatorio.json`. Os mais comuns:
 
 ## O que já foi testado e o que falta
 
-Testado aqui (CPU, sem GPU), com modelos minúsculos de pesos aleatórios e no mesmo formato dos
-reais:
+Testado numa T4 de verdade (09/10/2026), disparado pelo motor do estúdio com as mesmas funções do
+botão **Gerar no Kaggle**: envio do pacote, execução, progresso ao vivo, download e importação do
+resultado. Os problemas encontrados nas primeiras execuções já foram corrigidos no notebook (versões
+de pacotes da imagem do Kaggle, memória da GPU e uso das duas T4).
 
-- o fluxo inteiro do notebook, a partir de um pacote gerado pelo estúdio;
-- GGUF no formato original do Wan, com o codificador de movimento quantizado;
-- LoRAs no formato da Kijai;
-- o ViTPose oficial rodando um ONNX em pasta (o mesmo formato do repositório oficial);
-- o notebook num kernel Jupyter;
-- a automação com a API do Kaggle simulada.
+Testado também aqui, na CPU, com modelos minúsculos no mesmo formato dos reais: o fluxo inteiro do
+notebook, o GGUF, as LoRAs, o ViTPose e a automação com a API do Kaggle simulada.
 
-**Ainda não testado numa T4 de verdade.** Isso depende da sua conta Kaggle:
+Falta:
 
-- memória e tempo reais;
-- estabilidade do fp16;
-- qualidade do resultado.
-
-A primeira execução é o teste da Fase 3. O `relatorio.json` traz os números para ajustarmos.
+- rodar com um vídeo seu e um personagem do ChatGPT, pelo botão do estúdio no seu PC;
+- avaliar se 4 passos (mais rápido) mantêm a qualidade.
