@@ -196,8 +196,11 @@ def recommendations(r: dict[str, Any]) -> list[str]:
         tips.append(f"GPU com {best_vram} GB: ótima para o SAM 2; o Wan 2.2 Animate deve rodar remotamente.")
     else:
         tips.append(f"GPU com {best_vram} GB: dá para testar o Wan 2.2 Animate quantizado (GGUF) localmente.")
-    if gpus and not ml["torch"].get("cuda"):
-        tips.append("Há GPU NVIDIA, mas o PyTorch instalado não usa CUDA. Reinstale com scripts/setup.sh.")
+    if gpus and ml["torch"].get("installed") and not ml["torch"].get("cuda"):
+        tips.append(
+            "Há GPU NVIDIA, mas o PyTorch instalado é só-CPU (o SAM 2 funciona, só mais devagar). "
+            "Para usar a placa (driver 580+, ~12 GB livres): TORCH=cuda bash scripts/setup.sh"
+        )
     if not ml["torch"].get("installed"):
         tips.append("PyTorch não instalado: rode scripts/setup.sh.")
     if not ml["sam2_installed"]:

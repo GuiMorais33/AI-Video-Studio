@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Instala o AI Video Studio no Linux ou no WSL2 (Ubuntu).
 #
-#   bash scripts/setup.sh            # detecta GPU NVIDIA; sem GPU instala PyTorch só-CPU
-#   TORCH=cpu bash scripts/setup.sh  # força PyTorch só-CPU
-#   TORCH=cuda bash scripts/setup.sh # força PyTorch com CUDA
+#   bash scripts/setup.sh            # usa a GPU NVIDIA se ela, o driver e o espaço em disco permitirem
+#   TORCH=cpu bash scripts/setup.sh  # força PyTorch só-CPU (~200 MB)
+#   TORCH=cuda bash scripts/setup.sh # força PyTorch com CUDA (~7 GB)
 #   SAM2_MODEL=small bash scripts/setup.sh
 #
 # Tudo fica dentro da pasta do projeto: engine/.venv (Python), engine/.vendor/sam2
@@ -14,12 +14,23 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=scripts/node-env.sh
 source "$ROOT/scripts/node-env.sh"
+# shellcheck source=scripts/torch-choice.sh
+source "$ROOT/scripts/torch-choice.sh"
 VENV="$ROOT/engine/.venv"
 SAM2_DIR="$ROOT/engine/.vendor/sam2"
 # Commit fixo do repositório oficial facebookresearch/sam2 (SAM 2.1, dez/2024).
 SAM2_COMMIT="2b90b9f5ceec907a1c18123530e92e794ad901a4"
 TORCH="${TORCH:-auto}"
 SAM2_MODEL="${SAM2_MODEL:-tiny}"
+# Mínimo para o caminho só-CPU: ambiente Python, painel, checkpoint e alguns projetos.
+MIN_FREE_GB=5
+
+# Temporários no disco do projeto: o /tmp do Ubuntu pode ficar na memória (poucos GB), e o pip
+# baixa todos os pacotes para lá antes de instalar (2,8 GB no PyTorch com GPU).
+export TMPDIR="$ROOT/.cache/tmp"
+rm -rf "$TMPDIR"
+mkdir -p "$TMPDIR"
+trap 'rm -rf "$TMPDIR"' EXIT
 
 step() { printf '\n==> %s\n' "$*"; }
 fail() { printf '\nERRO: %s\n' "$*" >&2; exit 1; }
@@ -52,21 +63,33 @@ import sys
 sys.exit(0 if sys.version_info >= (3, 10) else 1)
 PY
 
+step "Verificando espaço em disco"
+FREE_GB="$(free_gb "$ROOT")"
+echo "Livre no disco do projeto: $FREE_GB GB"
+if (( FREE_GB < MIN_FREE_GB )); then
+  fail "pouco espaço em disco ($FREE_GB GB livres; são necessários pelo menos $MIN_FREE_GB GB).
+No Windows, o Ubuntu guarda os arquivos dentro do disco C: — libere espaço nele e rode de novo."
+fi
+
 step "Criando ambiente Python em engine/.venv"
 [[ -x "$VENV/bin/python" ]] || python3 -m venv "$VENV"
 PY="$VENV/bin/python"
 "$PY" -m pip install --upgrade --quiet pip setuptools wheel
 
+TORCH_AUTO=0
 if [[ "$TORCH" == "auto" ]]; then
-  if command -v nvidia-smi >/dev/null && nvidia-smi >/dev/null 2>&1; then TORCH=cuda; else TORCH=cpu; fi
+  TORCH_AUTO=1
+  blocker="$(cuda_blocker "$FREE_GB")"
+  if [[ -z "$blocker" ]]; then
+    TORCH=cuda
+  else
+    TORCH=cpu
+    echo "PyTorch só-CPU: $blocker."
+  fi
 fi
+
 step "Instalando PyTorch ($TORCH)"
-if [[ "$TORCH" == "cpu" ]]; then
-  # Pacote só-CPU (~200 MB) em vez do pacote CUDA padrão (vários GB).
-  "$PY" -m pip install --quiet torch torchvision --index-url https://download.pytorch.org/whl/cpu
-else
-  "$PY" -m pip install --quiet torch torchvision
-fi
+install_torch "$PY" "$TORCH" "$TORCH_AUTO" || fail "não foi possível instalar o PyTorch (veja as mensagens acima)."
 
 step "Instalando SAM 2.1 (repositório oficial da Meta)"
 if [[ ! -d "$SAM2_DIR/.git" ]]; then

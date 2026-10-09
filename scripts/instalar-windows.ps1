@@ -7,9 +7,10 @@
 # O que ele faz, pedindo confirmacao so quando o Windows exigir:
 #   1. Instala o WSL2 com Ubuntu, se faltar (pede permissao de administrador e, as vezes, reinicio).
 #   2. Abre o Ubuntu uma vez para voce criar usuario e senha, se ainda nao criou.
-#   3. Dentro do Ubuntu: baixa o projeto em ~/AI-Video-Studio e roda scripts/setup.sh
+#   3. Confere o espaco livre no disco do Ubuntu (5 GB no minimo; 12 GB para usar placa NVIDIA).
+#   4. Dentro do Ubuntu: baixa o projeto em ~/AI-Video-Studio e roda scripts/setup.sh
 #      (instala Python, FFmpeg, PyTorch, SAM 2.1, Node.js e o painel; pede a senha do Ubuntu).
-#   4. Cria o atalho "AI Video Studio" na Area de Trabalho para abrir o estudio.
+#   5. Cria o atalho "AI Video Studio" na Area de Trabalho para abrir o estudio.
 # Pode rodar de novo quantas vezes quiser: ele continua de onde parou e atualiza o projeto.
 
 param(
@@ -33,6 +34,21 @@ function Stop-Installer([string]$text) {
     Write-Host ""
     Read-Host "Pressione Enter para sair"
     exit 1
+}
+
+function Get-WslFreeGB([string]$name) {
+    # Espaco livre no disco do Windows onde fica o disco virtual do Ubuntu (ext4.vhdx).
+    # De dentro do Ubuntu o "df" nao enxerga esse limite. Padrao: o disco do AppData (C:).
+    $path = "" + $env:LOCALAPPDATA
+    $entry = Get-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Lxss\*" -ErrorAction SilentlyContinue |
+        Where-Object { $_.DistributionName -eq $name } | Select-Object -First 1
+    if ($entry -and $entry.BasePath) { $path = "" + $entry.BasePath }
+    if (-not $path) { return $null }
+    $letter = ($path -replace '^\\\\\?\\', '').Substring(0, 1)
+    if ($letter -notmatch '^[A-Za-z]$') { return $null }
+    $psDrive = Get-PSDrive -Name $letter -ErrorAction SilentlyContinue
+    if (-not $psDrive -or $null -eq $psDrive.Free) { return $null }
+    return [pscustomobject]@{ Letter = $letter.ToUpper(); GB = [math]::Round($psDrive.Free / 1GB, 1) }
 }
 
 function Get-WslDistros {
@@ -98,14 +114,34 @@ if (-not $user -or $user -eq "root") {
 }
 Write-Host "Usuario do ${Distro}: $user"
 
-# --- 3. Projeto e dependencias dentro do Ubuntu ---------------------------
+# --- 3. Espaco em disco ----------------------------------------------------
+# So-CPU: ~5 GB. Com a placa NVIDIA, o PyTorch baixa ~3 GB e ocupa ~7 GB instalado.
+Write-Step "Verificando espaco em disco"
+$torchEnv = ""
+$space = Get-WslFreeGB $Distro
+if ($space) {
+    Write-Host "Livre no disco $($space.Letter): (onde fica o $Distro): $($space.GB) GB"
+    if ($space.GB -lt 5) {
+        Stop-Installer ("Pouco espaco no disco $($space.Letter): ($($space.GB) GB livres). O AI Video Studio precisa de pelo menos 5 GB " +
+            "(12 GB para usar a placa NVIDIA). Libere espaco (Lixeira, Downloads, Configuracoes > Sistema > Armazenamento) " +
+            "e rode este instalador de novo.")
+    }
+    if ($space.GB -lt 12) {
+        Write-Host "Menos de 12 GB livres: instalando o PyTorch so-CPU (~200 MB), mesmo se houver placa NVIDIA."
+        $torchEnv = "TORCH=cpu "
+    }
+} else {
+    Write-Host "Nao foi possivel medir o espaco livre; seguindo assim mesmo."
+}
+
+# --- 4. Projeto e dependencias dentro do Ubuntu ---------------------------
 Write-Step "Baixando o projeto e instalando dependencias (pode levar de 10 a 30 minutos)"
 Write-Host "Quando pedir [sudo] password, digite a senha do Ubuntu (ela nao aparece enquanto voce digita)."
 $setup = "set -e; " +
     "if ! command -v git >/dev/null; then sudo apt-get update && sudo apt-get install -y git; fi; " +
     "if [ -d ~/AI-Video-Studio/.git ]; then git -C ~/AI-Video-Studio pull --ff-only; " +
     "else git clone $RepoUrl ~/AI-Video-Studio; fi; " +
-    "cd ~/AI-Video-Studio && bash scripts/setup.sh"
+    "cd ~/AI-Video-Studio && " + $torchEnv + "bash scripts/setup.sh"
 # Chamado direto (fora de funcao e sem capturar a saida): o progresso aparece na tela e o
 # "[sudo] password" funciona no console. Sem aspas duplas em $setup: o PowerShell 5.1 as remove.
 & wsl.exe -d $Distro -e bash -lc $setup
@@ -114,7 +150,7 @@ if ($code -ne 0) {
     Stop-Installer "A instalacao dentro do $Distro falhou (codigo $code). Veja as mensagens acima e rode o instalador de novo."
 }
 
-# --- 4. Atalho na Area de Trabalho ----------------------------------------
+# --- 5. Atalho na Area de Trabalho ----------------------------------------
 Write-Step "Criando o atalho 'AI Video Studio' na Area de Trabalho"
 $appDir = Join-Path $env:LOCALAPPDATA "AIVideoStudio"
 New-Item -ItemType Directory -Force -Path $appDir | Out-Null

@@ -39,6 +39,10 @@ O roteiro completo e o que foi revisado no plano original estão em
 O estúdio roda no Ubuntu dentro do WSL2, como a Meta recomenda para o SAM 2. Você continua usando
 o navegador do Windows.
 
+**Espaço livre no disco C:** pelo menos 5 GB. Para usar uma placa NVIDIA no SAM 2 são 12 GB, porque
+o PyTorch com GPU tem ~7 GB. Com menos que isso, o instalador usa a versão só-CPU (~200 MB), que
+funciona igual, só que mais devagar.
+
 1. Abra o **PowerShell** (normal, não precisa ser administrador) e cole:
    ```powershell
    irm https://raw.githubusercontent.com/GuiMorais33/AI-Video-Studio/HEAD/scripts/instalar-windows.ps1 -OutFile $env:TEMP\instalar-aivs.ps1
@@ -59,7 +63,9 @@ O instalador:
 - baixa o projeto em `~/AI-Video-Studio` dentro do Ubuntu;
 - roda `scripts/setup.sh`, que:
   - cria `engine/.venv`;
-  - instala o PyTorch (só-CPU se não houver GPU NVIDIA);
+  - instala o PyTorch:
+    - com GPU quando há placa NVIDIA RTX 20 / GTX 16 ou mais nova, driver 580+ e 12 GB livres;
+    - só-CPU nos outros casos, ou se o download da versão com GPU falhar;
   - instala o SAM 2 oficial da Meta numa versão fixa;
   - baixa o checkpoint **SAM 2.1 Tiny** (~156 MB);
   - instala o Node.js 22 se o do sistema for antigo;
@@ -165,6 +171,9 @@ Cada projeto fica em `data/projects/<id>/`:
 ```bash
 cd engine && .venv/bin/python -m pytest -q
 cd web && npm run typecheck && npm run build
+bash scripts/tests/torch-choice.test.sh   # escolha do PyTorch (GPU simulada)
+bash scripts/tests/setup.test.sh          # setup.sh de ponta a ponta com pip/GPU/disco simulados
+pwsh -NoProfile -File scripts/tests/instalar-windows.test.ps1   # instalador do Windows com WSL simulado
 # Notebook do Kaggle na CPU com modelos minúsculos (requer remote/kaggle/requirements-test.txt):
 python -m pytest -q remote/kaggle/tests
 python remote/kaggle/build_notebook.py   # regrava o .ipynb depois de mudar aivs_wan.py

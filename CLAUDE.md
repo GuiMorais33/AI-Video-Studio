@@ -18,6 +18,7 @@ cd engine && .venv/bin/python -m pytest -q         # testes do motor
 cd web && npm run typecheck && npm run build       # checagens do painel
 STUDIO_TRACKER=demo engine/.venv/bin/studio serve  # motor sem IA, para mexer na interface
 pwsh -NoProfile -File scripts/tests/instalar-windows.test.ps1  # instalador do Windows com WSL simulado
+bash scripts/tests/setup.test.sh && bash scripts/tests/torch-choice.test.sh  # setup.sh com pip/GPU/disco simulados
 ```
 
 - Scripts `.ps1`:

@@ -48,6 +48,19 @@ function global:Start-Process {
 
 function global:Read-Host { param($Prompt) $global:S.Prompts += ,$Prompt; return "" }
 
+# Registro do WSL (onde fica o disco do Ubuntu) e espaco livre no disco do Windows.
+function global:Get-ItemProperty {
+    param($Path, $ErrorAction)
+    if (-not $global:S.Installed) { return }
+    return [pscustomobject]@{ DistributionName = "Ubuntu"; BasePath = "\\?\D:\WSL\Ubuntu" }
+}
+function global:Get-PSDrive {
+    param($Name, $ErrorAction)
+    $global:S.DriveQueried = $Name
+    if ($null -eq $global:S.FreeGB) { return }
+    return [pscustomobject]@{ Name = $Name; Free = [double]$global:S.FreeGB * 1GB }
+}
+
 function global:New-Object {
     param([string]$TypeName, [string]$ComObject)
     $shell = [pscustomobject]@{}
@@ -68,8 +81,8 @@ function Invoke-Scenario([string]$name, [hashtable]$state) {
     $env:LOCALAPPDATA = Join-Path $root "AppData"
     $env:SystemRoot = $root  # no Windows real: C:\Windows
     $defaults = @{
-        Installed = $false; InstallWorks = $true; Version = "2"; User = "root"; SetupCode = 0
-        Calls = @(); StartProcess = @(); Prompts = @(); Setup = $null; Shortcut = $null
+        Installed = $false; InstallWorks = $true; Version = "2"; User = "root"; SetupCode = 0; FreeGB = 50
+        Calls = @(); StartProcess = @(); Prompts = @(); Setup = $null; Shortcut = $null; DriveQueried = $null
     }
     foreach ($key in $state.Keys) { $defaults[$key] = $state[$key] }
     $global:S = [pscustomobject]$defaults
@@ -89,6 +102,9 @@ Check ($global:S.Calls -contains "-d Ubuntu") "abre o Ubuntu para criar o usuari
 Check ($global:S.Setup -match "git clone https://github.com/GuiMorais33/AI-Video-Studio.git ~/AI-Video-Studio") "clona o projeto"
 Check ($global:S.Setup -match "bash scripts/setup.sh") "roda o setup"
 Check ($global:S.Setup -notmatch '"') "comando do setup sem aspas duplas (PowerShell 5.1 as remove)"
+Check ($global:S.DriveQueried -eq "D") "mede o disco onde fica o Ubuntu (registro do WSL): '$($global:S.DriveQueried)'"
+Check ($r.Output -match "Livre no disco D: .*50 GB") "mostra o espaco livre"
+Check ($global:S.Setup -notmatch "TORCH=") "com espaco, deixa o setup escolher o PyTorch"
 Check ($null -ne $global:S.Shortcut -and $global:S.Shortcut.Path -like "*AI Video Studio.lnk") "cria o atalho na Area de Trabalho"
 $launcher = Join-Path $env:LOCALAPPDATA "AIVideoStudio/abrir-estudio.ps1"
 Check (Test-Path $launcher) "grava o lancador"
@@ -111,6 +127,22 @@ Check ($null -eq $global:S.Shortcut) "nao cria atalho quando o setup falha"
 $r = Invoke-Scenario "precisa reiniciar" @{ InstallWorks = $false }
 Check ($r.Exit -eq 1) "sai com codigo 1"
 Check ($r.Output -match "Reinicie o computador") "pede para reiniciar"
+
+# 4) Pouco espaco no disco do Ubuntu: para antes do setup, explicando o que liberar.
+$r = Invoke-Scenario "pouco espaco" @{ Installed = $true; User = "guimo"; FreeGB = 3.2 }
+Check ($r.Exit -eq 1) "sai com codigo 1"
+Check ($r.Output -match "Pouco espaco no disco D: \(3\.2 GB livres\)") "explica quanto espaco falta"
+Check ($null -eq $global:S.Setup) "nao roda o setup"
+
+# 5) Espaco medio: instala o PyTorch so-CPU (~200 MB) em vez do pacote da placa NVIDIA (~7 GB).
+$r = Invoke-Scenario "espaco medio" @{ Installed = $true; User = "guimo"; FreeGB = 8 }
+Check ($global:S.Setup -match "&& TORCH=cpu bash scripts/setup.sh$") "passa TORCH=cpu ao setup: '$($global:S.Setup)'"
+Check ($r.Output -match "Pronto!") "termina com sucesso"
+
+# 6) Sem como medir o espaco: segue normalmente.
+$r = Invoke-Scenario "espaco desconhecido" @{ Installed = $true; User = "guimo"; FreeGB = $null }
+Check ($r.Output -match "Nao foi possivel medir") "avisa que nao mediu"
+Check ($global:S.Setup -match "bash scripts/setup.sh$" -and $global:S.Setup -notmatch "TORCH=") "roda o setup sem TORCH"
 
 if ($script:failures) { Write-Host "$($script:failures) verificacao(oes) falharam" -ForegroundColor Red; exit 1 }
 Write-Host "Todas as verificacoes passaram" -ForegroundColor Green

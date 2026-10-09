@@ -30,3 +30,6 @@ Thumbs.db
 
 # Node.js baixado pelo setup quando o do sistema é antigo
 /.vendor/
+
+# Temporários do setup (pip, npm)
+/.cache/
