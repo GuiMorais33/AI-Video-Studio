@@ -17,7 +17,14 @@ bash scripts/start.sh                              # motor :8765 + painel :3000
 cd engine && .venv/bin/python -m pytest -q         # testes do motor
 cd web && npm run typecheck && npm run build       # checagens do painel
 STUDIO_TRACKER=demo engine/.venv/bin/studio serve  # motor sem IA, para mexer na interface
+pwsh -NoProfile -File scripts/tests/instalar-windows.test.ps1  # instalador do Windows com WSL simulado
 ```
+
+- Scripts `.ps1`:
+  - só ASCII (o PowerShell 5.1 lê UTF-8 sem BOM como ANSI);
+  - lembre que nomes de variáveis não diferenciam maiúsculas (`$distro` == `$Distro`);
+  - comandos nativos que precisam de console (sudo, progresso) são chamados direto, fora de
+    funções e sem capturar a saída.
 
 ## Arquitetura
 

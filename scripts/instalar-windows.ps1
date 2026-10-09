@@ -48,12 +48,6 @@ function Get-WslDistros {
     return $distros
 }
 
-function Invoke-InDistro([string]$command) {
-    # Sem aspas duplas em $command: o PowerShell 5.1 as remove ao chamar programas nativos.
-    & wsl.exe -d $Distro -e bash -lc $command
-    return $LASTEXITCODE
-}
-
 Write-Host ""
 Write-Host "AI Video Studio - instalador" -ForegroundColor Cyan
 Write-Host "Projeto: $RepoUrl"
@@ -65,19 +59,21 @@ if ($build -lt 19041) {
 }
 
 Write-Step "Verificando WSL e $Distro"
-$distro = Get-WslDistros | Where-Object { $_.Name -eq $Distro } | Select-Object -First 1
-if (-not $distro) {
+# Atencao: o PowerShell nao diferencia maiusculas de minusculas nos nomes de variaveis.
+# $wslEntry nao pode se chamar $distro, senao apagaria o parametro $Distro ("Ubuntu").
+$wslEntry = Get-WslDistros | Where-Object { $_.Name -eq $Distro } | Select-Object -First 1
+if (-not $wslEntry) {
     Write-Host "O $Distro no WSL nao esta instalado. O Windows vai pedir permissao de administrador."
     Write-Host "Se uma janela do $Distro abrir pedindo usuario e senha, crie (guarde a senha) e volte aqui."
     $proc = Start-Process -FilePath "wsl.exe" -ArgumentList "--install", "-d", $Distro -Verb RunAs -Wait -PassThru
     Read-Host "Quando a instalacao terminar (e o usuario do $Distro tiver sido criado, se pedido), pressione Enter"
-    $distro = Get-WslDistros | Where-Object { $_.Name -eq $Distro } | Select-Object -First 1
-    if (-not $distro) {
+    $wslEntry = Get-WslDistros | Where-Object { $_.Name -eq $Distro } | Select-Object -First 1
+    if (-not $wslEntry) {
         Stop-Installer ("A instalacao do WSL terminou (codigo $($proc.ExitCode)), mas o $Distro ainda nao aparece. " +
             "Reinicie o computador e rode este instalador de novo. Se pedir, ative a virtualizacao (Intel VT-x / AMD-V) na BIOS.")
     }
 }
-if ($distro.Version -ne "2") {
+if ($wslEntry.Version -ne "2") {
     Write-Host "Convertendo $Distro para WSL2..."
     & wsl.exe --set-version $Distro 2
     if ($LASTEXITCODE -ne 0) { Stop-Installer "Nao foi possivel converter o $Distro para WSL2." }
@@ -110,7 +106,10 @@ $setup = "set -e; " +
     "if [ -d ~/AI-Video-Studio/.git ]; then git -C ~/AI-Video-Studio pull --ff-only; " +
     "else git clone $RepoUrl ~/AI-Video-Studio; fi; " +
     "cd ~/AI-Video-Studio && bash scripts/setup.sh"
-$code = Invoke-InDistro $setup
+# Chamado direto (fora de funcao e sem capturar a saida): o progresso aparece na tela e o
+# "[sudo] password" funciona no console. Sem aspas duplas em $setup: o PowerShell 5.1 as remove.
+& wsl.exe -d $Distro -e bash -lc $setup
+$code = $LASTEXITCODE
 if ($code -ne 0) {
     Stop-Installer "A instalacao dentro do $Distro falhou (codigo $code). Veja as mensagens acima e rode o instalador de novo."
 }
