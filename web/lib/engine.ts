@@ -51,6 +51,8 @@ export interface Project extends ProjectSummary {
   jobs: Partial<Record<Job["kind"], Job>>;
   exports: Record<"preview.mp4" | "mask.mp4" | "masks.zip", boolean>;
   reference: boolean;
+  /** Fotos extras do rosto (01.png, 02.png...), usadas no refino do rosto no Kaggle. */
+  faces: string[];
   wan: Record<WanFile, boolean>;
 }
 
@@ -135,6 +137,13 @@ export const engine = {
     form.append("file", file);
     return request<{ width: number; height: number }>(`/projects/${id}/reference`, { method: "POST", body: form });
   },
+  uploadFaces: (id: string, files: File[]) => {
+    const form = new FormData();
+    for (const file of files) form.append("files", file);
+    return request<{ saved: string[]; faces: string[] }>(`/projects/${id}/faces`, { method: "POST", body: form });
+  },
+  deleteFace: (id: string, name: string) =>
+    request<{ faces: string[] }>(`/projects/${id}/faces/${encodeURIComponent(name)}`, { method: "DELETE" }),
   wanPackage: (id: string, options: WanPackageOptions) => request<Job>(`/projects/${id}/wan-package`, json(options)),
   kaggleStatus: () => request<KaggleStatus>("/kaggle"),
   kaggleAccount: () => request<KaggleAccount>("/kaggle/account"),
@@ -149,6 +158,9 @@ export const engine = {
 
 export const referenceUrl = (id: string, version: string | number) =>
   `${ENGINE_URL}/projects/${id}/reference?v=${version}`;
+
+export const MAX_FACE_PHOTOS = 10;
+export const faceUrl = (id: string, name: string) => `${ENGINE_URL}/projects/${id}/faces/${encodeURIComponent(name)}`;
 
 export const KAGGLE_GUIDE_URL = "https://github.com/GuiMorais33/AI-Video-Studio/blob/HEAD/docs/KAGGLE.md";
 

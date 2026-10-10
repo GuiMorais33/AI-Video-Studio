@@ -7,7 +7,10 @@
   a coluna Status ao concluir algo.
 - Hardware alvo: Windows + WSL2 (Ubuntu), provavelmente sem GPU NVIDIA. Tudo pesado precisa ter
   caminho em CPU ou rodar remotamente (Kaggle).
-- Licenças importam (anúncios da VN Store): confira `docs/LICENCAS.md` antes de adicionar modelos.
+- Uso declarado pelo usuário (10/2026): não é para anúncios pagos, e a meta é o rosto final ficar
+  igual às fotos enviadas. Modelos com licença não comercial ou de pesquisa são aceitos; registre a
+  licença de cada um em `docs/LICENCAS.md`. Filtros de segurança das ferramentas (ex.: o filtro de
+  conteúdo adulto do FaceFusion) não são desligados.
 
 ## Comandos
 
@@ -44,3 +47,6 @@ bash scripts/tests/setup.test.sh && bash scripts/tests/torch-choice.test.sh  # s
   - O motor envia o pacote ao Kaggle por `engine/studio/kaggle_remote.py`, com tarefas `kaggle`
     numa fila separada.
   - No Kaggle: só execução em lote, privada, sem túnel e sem interface.
+  - Depois do Wan, o notebook refina o rosto com o FaceFusion 3.9.1 (commit fixo em `Config`),
+    usando as fotos de `faces/` do pacote (ou a referência). Se falhar, entrega o vídeo do Wan e
+    registra um aviso no relatório.

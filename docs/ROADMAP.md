@@ -15,7 +15,7 @@ relação ao plano original são duas. O teste do Wan Animate veio para a Fase 3
 | 4. Integração | Envio do clipe + máscara + referência do ChatGPT para o Kaggle e retorno do resultado ao estúdio | Fluxo de ponta a ponta disparado pelo estúdio | **Funcionou de ponta a ponta pelo motor** (mesmas funções do botão, 4 execuções reais); falta disparar pelo botão no seu PC com um vídeo seu |
 | 5. Refinamento | Composição com bordas suaves, ajuste de cor, upscale para 1080×1920, áudio original | Vídeo final pronto para Reels com comparativo antes/depois | A fazer |
 | 6. Interface definitiva | Biblioteca de personagens, histórico, fila de gerações | Fluxo aprovado executado só pela interface | A fazer |
-| Opcional | Refino de rosto (FaceFusion ou similar) | Somente com modelo de licença comercial confirmada | Em espera |
+| 3b. Refino do rosto | FaceFusion 3.9.1 depois do Wan, com várias fotos do rosto; padrão no notebook | Rosto final reconhecível como a pessoa das fotos, num vídeo real | Implementado e testado na CPU com os modelos reais; **falta a execução na T4** |
 
 ## Fase 2 — como validar com vídeo real
 

@@ -11,7 +11,9 @@ imagem de referência e job.json) e:
 3. codifica o texto (umT5) e libera a memória;
 4. gera com o WanAnimatePipeline do diffusers: transformer GGUF + LoRAs de poucos
    passos + offload em blocos, em fp16 (a T4 não tem bf16 nativo);
-5. grava resultado.mp4, prévias de depuração e relatorio.json em /kaggle/working.
+5. troca o rosto gerado pelo rosto das fotos, quadro a quadro, e restaura a nitidez
+   (FaceFusion: hyperswap + GFPGAN); se não der (foto sem rosto humano), segue sem;
+6. grava resultado.mp4, prévias de depuração e relatorio.json em /kaggle/working.
 
 Todo caminho de modelo aceita um arquivo/pasta local no lugar do Hugging Face: é assim
 que os testes rodam este fluxo inteiro na CPU com modelos minúsculos.
@@ -24,6 +26,7 @@ import json
 import math
 import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -76,6 +79,17 @@ class Config:
     mask_kernel: int = 7
     mask_iterations: int = 3
     mask_block: int = 16
+    # Refino do rosto (FaceFusion 3.9.1), padrão: o rosto final fica igual ao das fotos.
+    face_refine: bool = True
+    facefusion_git: str = "https://github.com/facefusion/facefusion.git"
+    facefusion_commit: str = "72470819a0373be3388b3929c8f8f311f418fc3c"  # tag 3.9.1
+    facefusion_dir: str | None = None  # clone local já existente (testes)
+    face_swapper_model: str = "hyperswap_1a_256"
+    face_swapper_pixel_boost: str = "512x512"
+    # 0,5 = só a identidade das fotos; acima disso afasta ainda mais do rosto gerado.
+    face_swapper_weight: float = 0.75
+    face_enhancer_model: str = "gfpgan_1.4"
+    face_enhancer_blend: int = 80
     # Pastas
     input_root: str = "/kaggle/input"
     scratch: str = "/kaggle/tmp"
@@ -467,7 +481,7 @@ def generate(pipe, cfg: Config, job: dict, reference, poses, faces, backgrounds_
 
     def on_step(_pipe, _i, _t, kwargs):
         done["n"] += 1
-        progress(0.45 + 0.5 * done["n"] / total, f"Gerando: passo {done['n']}/{total}")
+        progress(0.45 + 0.4 * done["n"] / total, f"Gerando: passo {done['n']}/{total}")
         return kwargs
 
     mask_images = [Image.fromarray(m.astype(np.uint8) * 255, mode="L") for m in masks]
@@ -492,6 +506,140 @@ def generate(pipe, cfg: Config, job: dict, reference, poses, faces, backgrounds_
     if not np.isfinite(result).all():
         raise FloatingPointError("A geração produziu NaN. Tente dtype='float32' (mais lento).")
     return result, {"segment_frames": seg, "segments": segments, "steps_total": total}
+
+
+# --------------------------------------------------------------------------- refino do rosto
+
+FACE_PROGRESS_RE = re.compile(r"processing:\s+(\d+)%")
+IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".webp")
+
+
+def face_sources(job_dir: Path) -> list[Path]:
+    """Fotos que definem o rosto: as de faces/ (vários ângulos, o FaceFusion combina todas) ou,
+    sem elas, a foto principal do personagem."""
+    faces_dir = job_dir / "faces"
+    faces = sorted(p for p in faces_dir.iterdir() if p.suffix.lower() in IMAGE_SUFFIXES) if faces_dir.is_dir() else []
+    return faces or [job_dir / "reference.png"]
+
+
+def ffmpeg_version() -> tuple[int, int] | None:
+    try:
+        out = run(["ffmpeg", "-version"], text=True).stdout
+    except Exception:
+        return None
+    found = re.search(r"ffmpeg version n?(\d+)\.(\d+)", out)
+    return (int(found[1]), int(found[2])) if found else None
+
+
+def facefusion_dir(cfg: Config, work: Path) -> Path:
+    """Código do FaceFusion no commit fixo, numa pasta gravável (os modelos ficam em .assets)."""
+    if cfg.facefusion_dir:
+        return Path(cfg.facefusion_dir)
+    root = work / "facefusion"
+    if not (root / "facefusion.py").exists():
+        shutil.rmtree(root, ignore_errors=True)
+        root.mkdir(parents=True)
+        run(["git", "init", "-q", str(root)])
+        run(["git", "-C", str(root), "fetch", "-q", "--depth", "1", cfg.facefusion_git, cfg.facefusion_commit])
+        run(["git", "-C", str(root), "checkout", "-q", "FETCH_HEAD"])
+    return root
+
+
+def facefusion_command(cfg: Config, sources: list[Path], target: Path, output: Path, work: Path,
+                       provider: str, device_id: int) -> list[str]:
+    """headless-run do FaceFusion: troca o rosto principal de cada quadro pelo das fotos e restaura."""
+    return [
+        sys.executable, "facefusion.py", "headless-run",
+        "-s", *(str(p) for p in sources), "-t", str(target), "-o", str(output),
+        "--temp-path", str(work / "ff-temp"), "--jobs-path", str(work / "ff-jobs"),
+        "--processors", "face_swapper", "face_enhancer",
+        "--face-swapper-model", cfg.face_swapper_model,
+        "--face-swapper-pixel-boost", cfg.face_swapper_pixel_boost,
+        "--face-swapper-weight", str(cfg.face_swapper_weight),
+        "--face-enhancer-model", cfg.face_enhancer_model,
+        "--face-enhancer-blend", str(cfg.face_enhancer_blend),
+        "--face-detector-model", "yolo_face", "--face-detector-size", "640x640", "--face-detector-score", "0.5",
+        "--face-landmarker-model", "2dfan4", "--face-landmarker-score", "0.5",
+        # Só o rosto maior de cada quadro: o personagem, não quem está ao fundo.
+        "--face-selector-mode", "one", "--face-selector-order", "large-small",
+        "--face-tracker-score", "0.3", "--target-frame-amount", "2",
+        # Caixa + oclusão: mantém o rosto inteiro e respeita mãos e cabelo na frente.
+        "--face-mask-types", "box", "occlusion", "--face-occluder-model", "xseg_1",
+        "--face-mask-blur", "0.3", "--face-mask-padding", "0",
+        "--workflow-strategy", "memory",
+        "--output-video-encoder", "libx264", "--output-video-quality", "90", "--output-video-preset", "slow",
+        "--output-audio-volume", "0",
+        "--execution-providers", provider, "--execution-device-ids", str(device_id),
+        "--execution-thread-count", "4",
+        "--download-providers", "github", "--log-level", "info",
+    ]
+
+
+def cuda_library_path() -> str:
+    """Bibliotecas CUDA/cuDNN que vêm com o PyTorch (pacotes nvidia-*). O FaceFusion não importa o
+    torch; sem estas pastas no LD_LIBRARY_PATH, o onnxruntime cairia na CPU sem avisar."""
+    import site
+
+    bases = [*site.getsitepackages(), site.getusersitepackages()]
+    return ":".join(str(p) for base in bases for p in sorted(Path(base).glob("nvidia/*/lib")) if p.is_dir())
+
+
+def refine_face(cfg: Config, sources: list[Path], video: Path, output: Path, work: Path, report: Report,
+                on_progress: Callable[[float], None] = lambda f: None) -> bool:
+    """Troca o rosto gerado pelo rosto das fotos, quadro a quadro, e restaura a nitidez (FaceFusion).
+
+    Quando não dá (foto sem rosto humano, filtro de conteúdo do FaceFusion, ffmpeg antigo), registra o
+    motivo como aviso e devolve False: o vídeo do Wan continua sendo o resultado.
+    """
+    def skip(reason: str) -> bool:
+        report.aviso(f"Refino do rosto não aplicado: {reason}. O resultado saiu sem o refino.")
+        report.data["rosto"] = {"ok": False, "motivo": reason}
+        return False
+
+    version = ffmpeg_version()
+    if version is not None and version < (5, 1):
+        return skip(f"o ffmpeg {version[0]}.{version[1]} desta máquina é antigo (o FaceFusion pede 5.1+)")
+    torch = _torch()
+    provider = "cuda" if torch.cuda.is_available() else "cpu"
+    # Na T4 x2, a 2ª GPU (a da pose) está livre: a 1ª ainda guarda o que sobrou da geração.
+    device_id = 1 if torch.cuda.device_count() > 1 else 0
+    try:
+        root = facefusion_dir(cfg, work)
+    except Exception as exc:
+        return skip(f"não foi possível baixar o FaceFusion ({type(exc).__name__})")
+    env = {**os.environ, "CONDA_READY": "1"}  # não reinicia o Python em ambientes conda
+    if provider == "cuda":
+        env["LD_LIBRARY_PATH"] = ":".join(filter(None, [cuda_library_path(), env.get("LD_LIBRARY_PATH")]))
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.unlink(missing_ok=True)
+    log_path = Path(cfg.output) / "depuracao" / "facefusion.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    command = facefusion_command(cfg, sources, video, output, work, provider, device_id)
+    with open(log_path, "wb") as log:
+        proc = subprocess.Popen(command, cwd=root, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        last = -1
+        # read1: devolve o que já chegou, sem esperar encher o bloco (o progresso fica em dia).
+        for chunk in iter(lambda: proc.stdout.read1(4096), b""):
+            log.write(chunk)
+            # As barras de progresso (tqdm) usam \r: pega o último "processing: NN%" do pedaço.
+            found = FACE_PROGRESS_RE.findall(chunk.decode(errors="replace"))
+            if found and int(found[-1]) != last:
+                last = int(found[-1])
+                on_progress(last / 100)
+        code = proc.wait()
+    text = log_path.read_text(errors="replace").lower()
+    if code == 0 and output.exists() and output.stat().st_size > 0:
+        report.data["rosto"] = {
+            "ok": True, "fotos": len(sources), "trocador": cfg.face_swapper_model,
+            "restaurador": cfg.face_enhancer_model, "provedor": provider,
+            "gpu": device_id if provider == "cuda" else None,
+        }
+        return True
+    if "no source face" in text:
+        return skip("as fotos não têm um rosto humano detectável (personagem sem rosto?)")
+    if "analysing" in text and "processing" not in text:
+        return skip("o filtro de conteúdo do FaceFusion barrou o vídeo")
+    return skip(f"o FaceFusion terminou com código {code} (veja depuracao/facefusion.log)")
 
 
 # --------------------------------------------------------------------------- saída
@@ -594,9 +742,25 @@ def main(cfg: Config | None = None) -> dict:
             report.data["geracao"] = info
             if torch.cuda.is_available():
                 report.data["vram_pico_gb"] = round(torch.cuda.max_memory_allocated(torch.device(device)) / 2**30, 2)
+        del pipe
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        debug = out_dir / "depuracao"
+        wan_video = debug / "wan_sem_refino.mp4"
+        write_video(result, job["fps"], wan_video)
+        final = out_dir / "resultado.mp4"
+        refined = False
+        if cfg.face_refine:
+            with report.etapa("refino_rosto"):
+                progress(0.86, "Refinando o rosto com as fotos (FaceFusion)")
+                refined = refine_face(
+                    cfg, face_sources(job_dir), wan_video, final, scratch, report,
+                    on_progress=lambda f: progress(0.86 + 0.12 * f, f"Refinando o rosto: {round(f * 100)}%"),
+                )
+        if not refined:
+            shutil.copyfile(wan_video, final)
         with report.etapa("exportacao"):
-            write_video(result, job["fps"], out_dir / "resultado.mp4")
-            debug = out_dir / "depuracao"
             write_video([np.asarray(p) for p in poses], job["fps"], debug / "pose.mp4", crf=23)
             write_video([np.asarray(f) for f in faces], job["fps"], debug / "rosto.mp4", crf=23)
             write_video([m.astype(np.uint8) * 255 for m in gen_masks], job["fps"], debug / "mascara.mp4", crf=23)

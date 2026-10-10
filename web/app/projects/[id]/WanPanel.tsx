@@ -3,10 +3,12 @@
 import { useEffect, useRef, useState } from "react";
 import {
   KAGGLE_GUIDE_URL,
+  MAX_FACE_PHOTOS,
   type KaggleAccount,
   type KaggleStatus,
   type Project,
   engine,
+  faceUrl,
   fileUrl,
   referenceUrl,
 } from "@/lib/engine";
@@ -28,6 +30,7 @@ export function WanPanel({ project, locked, run }: Props) {
   const [account, setAccount] = useState<KaggleAccount | null>(null);
   const [token, setToken] = useState("");
   const refInput = useRef<HTMLInputElement>(null);
+  const facesInput = useRef<HTMLInputElement>(null);
   const resultInput = useRef<HTMLInputElement>(null);
 
   const trackedCurrent = project.tracked_revision !== null && project.tracked_revision === project.revision;
@@ -70,6 +73,19 @@ export function WanPanel({ project, locked, run }: Props) {
     });
   }
 
+  function pickFaces(e: React.ChangeEvent<HTMLInputElement>) {
+    const files = Array.from(e.target.files ?? []);
+    e.target.value = "";
+    if (!files.length) return;
+    run(files.length > 1 ? `Enviando ${files.length} fotos do rosto…` : "Enviando a foto do rosto…", () =>
+      engine.uploadFaces(project.id, files),
+    );
+  }
+
+  function removeFace(name: string) {
+    run("Removendo a foto…", () => engine.deleteFace(project.id, name));
+  }
+
   function pickResult(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     e.target.value = "";
@@ -94,11 +110,36 @@ export function WanPanel({ project, locked, run }: Props) {
           {project.reference ? (
             <img className="reference" src={referenceUrl(project.id, refVersion)} alt="Imagem de referência" />
           ) : (
-            <p className="muted small">Imagem do personagem criada no ChatGPT: corpo inteiro, fundo simples.</p>
+            <p className="muted small">
+              Foto de corpo inteiro (sua ou do personagem criado no ChatGPT), de frente e com fundo simples. Corpo,
+              roupa e cabelo vêm dela.
+            </p>
           )}
           <input ref={refInput} type="file" accept="image/*" hidden onChange={pickReference} />
           <button disabled={locked} onClick={() => refInput.current?.click()}>
             {project.reference ? "Trocar imagem" : "Enviar imagem"}
+          </button>
+
+          <h3>Fotos do rosto</h3>
+          <p className="muted small">
+            3 a 6 fotos nítidas do rosto: de frente, meio perfil, sorrindo, com boa luz. O rosto do vídeo final fica
+            igual a elas. Sem fotos aqui, o rosto vem da imagem acima.
+          </p>
+          {project.faces.length > 0 && (
+            <div className="faces">
+              {project.faces.map((name) => (
+                <figure key={name}>
+                  <img src={faceUrl(project.id, name)} alt={`Foto do rosto ${name}`} />
+                  <button className="link" disabled={locked} onClick={() => removeFace(name)}>
+                    remover
+                  </button>
+                </figure>
+              ))}
+            </div>
+          )}
+          <input ref={facesInput} type="file" accept="image/*" multiple hidden onChange={pickFaces} />
+          <button disabled={locked || project.faces.length >= MAX_FACE_PHOTOS} onClick={() => facesInput.current?.click()}>
+            {project.faces.length ? "Adicionar fotos do rosto" : "Enviar fotos do rosto"}
           </button>
         </div>
 
@@ -124,8 +165,8 @@ export function WanPanel({ project, locked, run }: Props) {
               placeholder="ex.: a cartoon astronaut in a white suit and orange helmet, dancing" />
           </label>
           <p className="muted small">
-            Descrever roupa e materiais deixa o resultado mais fiel à imagem. O rosto sempre segue as expressões da
-            pessoa do vídeo: personagens sem rosto humano (robô, capacete fechado) tendem a ganhar um rosto humano.
+            Descrever roupa e materiais deixa o resultado mais fiel à imagem. No fim, o rosto é trocado pelo das fotos
+            do rosto, mantendo as expressões do vídeo. Gere o pacote de novo depois de mudar as fotos.
           </p>
           {activeJob ? (
             <div className="job">

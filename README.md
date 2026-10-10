@@ -104,8 +104,10 @@ Clone em `~/`, não em `/mnt/c/...`: o disco do Windows visto pelo WSL é bem ma
 5. **Exportar:** gera `preview.mp4`, `mask.mp4` e `masks.zip`, com comparativo antes/depois na
    página.
 6. **Personagem (Kaggle):**
-   - envie a imagem do personagem (criada no ChatGPT, corpo inteiro) e, se quiser, descreva-o em
-     inglês (roupa, cores, materiais);
+   - envie a foto de corpo inteiro (sua ou do personagem criado no ChatGPT) e, se quiser,
+     descreva-o em inglês (roupa, cores, materiais);
+   - envie de 3 a 6 **fotos do rosto** (de frente, meio perfil, sorrindo): no fim, o rosto do vídeo
+     é trocado pelo delas (FaceFusion), para ficar igual à pessoa;
    - clique em **Gerar pacote para o Kaggle** e depois em **Gerar no Kaggle**;
    - o resultado volta com o áudio original e um comparativo lado a lado.
 

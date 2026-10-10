@@ -27,7 +27,18 @@ from .models import checkpoint_path, get_model
 from .projects import EXPORT_FILES, create_project, export_project, project_paths
 from .session import TrackingSession
 from .tracking import DemoTracker, Sam2Tracker, Tracker, TrackerError
-from .wan import WAN_FILES, WanError, build_package, import_result, save_reference
+from .wan import (
+    FACE_NAME_RE,
+    FACES_DIR,
+    WAN_FILES,
+    WanError,
+    build_package,
+    delete_face_photo,
+    import_result,
+    list_face_photos,
+    save_face_photo,
+    save_reference,
+)
 
 log = logging.getLogger(__name__)
 
@@ -131,6 +142,7 @@ def create_app(
             "jobs": db.latest_jobs(project["id"]),
             "exports": {name: (paths.exports / name).exists() for name in EXPORT_FILES},
             "reference": (paths.root / "reference.png").exists(),
+            "faces": list_face_photos(paths.root),
             "wan": {name: (paths.exports / name).exists() for name in WAN_FILES},
         }
 
@@ -307,6 +319,35 @@ def create_app(
         if not path.exists():
             raise HTTPException(404, "Nenhuma imagem de referência enviada.")
         return FileResponse(path, media_type="image/png", headers={"Cache-Control": "no-store"})
+
+    @app.post("/projects/{project_id}/faces")
+    def upload_faces(project_id: str, files: list[UploadFile] = File(...)) -> dict[str, Any]:
+        """Fotos extras do rosto para o refino no Kaggle (várias de uma vez)."""
+        get_project(project_id)
+        root = project_paths(settings, project_id).root
+        saved = []
+        for upload in files:
+            tmp = save_upload(upload, root)
+            try:
+                saved.append(save_face_photo(tmp, root))
+            finally:
+                tmp.unlink(missing_ok=True)
+        return {"saved": saved, "faces": list_face_photos(root)}
+
+    @app.get("/projects/{project_id}/faces/{name}")
+    def get_face(project_id: str, name: str) -> FileResponse:
+        get_project(project_id)
+        path = project_paths(settings, project_id).root / FACES_DIR / name
+        if not FACE_NAME_RE.fullmatch(name) or not path.exists():
+            raise HTTPException(404, "Foto do rosto não encontrada.")
+        return FileResponse(path, media_type="image/png", headers={"Cache-Control": "no-store"})
+
+    @app.delete("/projects/{project_id}/faces/{name}")
+    def remove_face(project_id: str, name: str) -> dict[str, Any]:
+        get_project(project_id)
+        root = project_paths(settings, project_id).root
+        delete_face_photo(root, name)
+        return {"faces": list_face_photos(root)}
 
     @app.post("/projects/{project_id}/wan-package", status_code=202)
     def wan_package(project_id: str, body: WanPackageIn) -> dict[str, Any]:

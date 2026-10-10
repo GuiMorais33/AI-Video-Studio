@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 import tempfile
 import zipfile
 from dataclasses import asdict, dataclass
@@ -29,6 +30,10 @@ PACKAGE_FORMAT = 1
 RESOLUTIONS = {"480p": 832 * 480, "720p": 1280 * 720}
 WAN_FILES = ("wan_package.zip", "wan_input.mp4", "wan_result.mp4", "wan_final.mp4", "comparativo.mp4")
 MAX_REFERENCE_BYTES = 25 * 1024 * 1024
+# Fotos extras do rosto, usadas pelo refino do rosto (FaceFusion) no Kaggle.
+FACES_DIR = "faces"
+MAX_FACE_PHOTOS = 10
+FACE_NAME_RE = re.compile(r"\d{2}\.png")
 # O Wan Animate gera em segmentos de 77 quadros (o 1º quadro de cada segmento seguinte repete o
 # último do anterior). Poucos quadros além de um segmento custam um segmento inteiro a mais.
 SEGMENT_FRAMES = 77
@@ -91,10 +96,10 @@ def _fit(img: Image.Image, geo: Geometry, resample: Image.Resampling) -> Image.I
     return img.crop((geo.crop_x, geo.crop_y, geo.crop_x + geo.width, geo.crop_y + geo.height))
 
 
-def save_reference(upload: Path, dest: Path) -> tuple[int, int]:
-    """Valida e normaliza a imagem de referência (PNG RGB; transparência vira fundo branco)."""
+def _save_image(upload: Path, dest: Path, *, min_side: int, label: str) -> tuple[int, int]:
+    """Valida e normaliza uma imagem enviada (PNG RGB; transparência vira fundo branco)."""
     if upload.stat().st_size > MAX_REFERENCE_BYTES:
-        raise WanError("Imagem de referência muito grande (máximo 25 MB).")
+        raise WanError(f"{label} muito grande (máximo 25 MB).")
     try:
         with Image.open(upload) as img:
             img = ImageOps.exif_transpose(img)
@@ -106,13 +111,41 @@ def save_reference(upload: Path, dest: Path) -> tuple[int, int]:
                 img = img.convert("RGB")
     except (OSError, Image.DecompressionBombError) as exc:
         raise WanError("O arquivo enviado não é uma imagem válida.") from exc
-    if min(img.size) < 256:
-        raise WanError("Imagem de referência muito pequena (mínimo 256 px no menor lado).")
+    if min(img.size) < min_side:
+        raise WanError(f"{label} muito pequena (mínimo {min_side} px no menor lado).")
     dest.parent.mkdir(parents=True, exist_ok=True)
     tmp = dest.with_name(dest.name + ".tmp")
     img.save(tmp, format="PNG")
     os.replace(tmp, dest)
     return img.size
+
+
+def save_reference(upload: Path, dest: Path) -> tuple[int, int]:
+    """Foto principal do personagem (corpo inteiro): o Wan tira dela corpo, roupa e cabelo."""
+    return _save_image(upload, dest, min_side=256, label="Imagem de referência")
+
+
+def list_face_photos(root: Path) -> list[str]:
+    faces = root / FACES_DIR
+    return sorted(p.name for p in faces.glob("*.png") if FACE_NAME_RE.fullmatch(p.name)) if faces.is_dir() else []
+
+
+def save_face_photo(upload: Path, root: Path) -> str:
+    """Foto extra do rosto (de frente, meio perfil, sorrindo...): o refino do rosto no Kaggle
+    combina todas numa identidade só. Devolve o nome salvo (01.png, 02.png...)."""
+    names = list_face_photos(root)
+    if len(names) >= MAX_FACE_PHOTOS:
+        raise WanError(f"Já há {MAX_FACE_PHOTOS} fotos do rosto; remova alguma antes de enviar outra.")
+    number = max((int(n[:2]) for n in names), default=0) + 1
+    name = f"{number:02d}.png"
+    _save_image(upload, root / FACES_DIR / name, min_side=128, label="Foto do rosto")
+    return name
+
+
+def delete_face_photo(root: Path, name: str) -> None:
+    if not FACE_NAME_RE.fullmatch(name):
+        raise WanError("Nome de foto inválido.")
+    (root / FACES_DIR / name).unlink(missing_ok=True)
 
 
 def build_package(
@@ -147,6 +180,7 @@ def build_package(
     trimmed = len(indices) - kept
     indices = indices[:kept]
     geo = wan_geometry(project["width"], project["height"], RESOLUTIONS[resolution])
+    face_names = list_face_photos(root)
 
     exports.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(dir=root, prefix="wan-") as tmp_name:
@@ -186,12 +220,17 @@ def build_package(
             "prompt": prompt.strip(),
             "empty_mask_frames": empty,
             "trimmed_frames": trimmed,
-            "files": {"video": "video.mp4", "masks": "masks/%05d.png", "reference": "reference.png"},
+            "files": {
+                "video": "video.mp4", "masks": "masks/%05d.png", "reference": "reference.png",
+                "faces": [f"{FACES_DIR}/{name}" for name in face_names],
+            },
         }
         package = tmp / "wan_package.zip"
         with zipfile.ZipFile(package, "w", compression=zipfile.ZIP_DEFLATED) as zf:
             zf.write(tmp / "video.mp4", "video.mp4", compress_type=zipfile.ZIP_STORED)
             zf.write(reference, "reference.png", compress_type=zipfile.ZIP_STORED)
+            for name in face_names:
+                zf.write(root / FACES_DIR / name, f"{FACES_DIR}/{name}", compress_type=zipfile.ZIP_STORED)
             for png in sorted((tmp / "masks").glob("*.png")):
                 zf.write(png, f"masks/{png.name}")
             zf.writestr("job.json", json.dumps(job, indent=2, ensure_ascii=False))

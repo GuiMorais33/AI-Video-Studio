@@ -22,6 +22,8 @@ PACKAGES = [
     "gguf==0.19.0",
     "ftfy",
     "sentencepiece",
+    # FaceFusion 3.9.1 (refino do rosto): o resto do que ele usa (OpenCV, SciPy, tqdm) já vem no Kaggle.
+    "onnx==1.23.1",
 ]
 
 INTRO = """# AI Video Studio — troca de personagem com Wan 2.2 Animate
@@ -31,7 +33,8 @@ Este notebook é gerado pelo AI Video Studio. Ele:
 1. lê o `wan_package.zip` anexado como dataset;
 2. extrai a pose e o rosto da pessoa;
 3. gera o personagem da imagem de referência no lugar dela, com o Wan 2.2 Animate;
-4. grava `resultado.mp4` e `relatorio.json` na aba **Output**.
+4. troca o rosto gerado pelo rosto das fotos enviadas (FaceFusion), quadro a quadro;
+5. grava `resultado.mp4` e `relatorio.json` na aba **Output**.
 
 **Antes de rodar:**
 
@@ -85,11 +88,13 @@ cfg = Config()
 # cfg.seed = 42          # mude para obter outra variação
 # cfg.mask_block = 16    # 32 = contorno mais folgado (mais espaço para roupas largas)
 # cfg.dtype = "float32"  # use se o relatório acusar NaN (bem mais lento)
+# cfg.face_refine = False                      # desliga o refino do rosto (FaceFusion)
+# cfg.face_swapper_model = "inswapper_128"     # outro trocador de rosto do FaceFusion
 cfg"""
 
 RUN = """import json
 relatorio = main(cfg)
-print(json.dumps({k: relatorio.get(k) for k in ("ok", "etapas", "geracao", "vram_pico_gb", "avisos")}, indent=2, ensure_ascii=False))"""
+print(json.dumps({k: relatorio.get(k) for k in ("ok", "etapas", "geracao", "vram_pico_gb", "rosto", "avisos")}, indent=2, ensure_ascii=False))"""
 
 
 def _cell(kind: str, source: str) -> dict:

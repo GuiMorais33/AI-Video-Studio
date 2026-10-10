@@ -15,6 +15,7 @@ from PIL import Image
 from studio import media
 from studio.api import create_app
 from studio.projects import project_paths
+from studio import wan
 from studio.wan import WanError, fit_segments, frame_indices, save_reference, wan_geometry
 
 
@@ -75,6 +76,25 @@ def test_save_reference_flattens_transparency(tmp_path):
         save_reference(bogus, tmp_path / "x.png")
 
 
+def test_face_photos_limit_and_names(tmp_path, monkeypatch):
+    monkeypatch.setattr(wan, "MAX_FACE_PHOTOS", 2)
+    photo = tmp_path / "rosto.png"
+    Image.new("RGB", (200, 260), (190, 140, 110)).save(photo)
+    root = tmp_path / "proj"
+    assert [wan.save_face_photo(photo, root) for _ in range(2)] == ["01.png", "02.png"]
+    with pytest.raises(WanError, match="Já há 2 fotos"):
+        wan.save_face_photo(photo, root)
+    wan.delete_face_photo(root, "01.png")
+    assert wan.save_face_photo(photo, root) == "03.png"  # não reaproveita o número
+    assert wan.list_face_photos(root) == ["02.png", "03.png"]
+    with pytest.raises(WanError):
+        wan.delete_face_photo(root, "../reference.png")
+    small = tmp_path / "pequena.png"
+    Image.new("RGB", (100, 100)).save(small)
+    with pytest.raises(WanError, match="mínimo 128"):
+        wan.save_face_photo(small, tmp_path / "outro")
+
+
 def _ready_project(client, video):
     with open(video, "rb") as f:
         project = client.post("/projects", files={"file": ("clip.mp4", f)}).json()
@@ -108,6 +128,25 @@ def test_package_and_result_round_trip(settings, video, tmp_path):
             }
         assert client.get(f"/projects/{pid}/reference").headers["content-type"] == "image/png"
 
+        # Fotos extras do rosto: várias de uma vez, numeradas; remover libera o número só no fim.
+        faces = []
+        for i, color in enumerate([(200, 150, 120), (190, 140, 110), (180, 130, 100)]):
+            path = tmp_path / f"rosto{i}.jpg"
+            Image.new("RGB", (300, 300), color).save(path)
+            faces.append(path)
+        handles = [open(p, "rb") for p in faces]
+        try:
+            resp = client.post(f"/projects/{pid}/faces", files=[("files", (p.name, h)) for p, h in zip(faces, handles)])
+        finally:
+            for h in handles:
+                h.close()
+        assert resp.json() == {"saved": ["01.png", "02.png", "03.png"], "faces": ["01.png", "02.png", "03.png"]}
+        assert client.get(f"/projects/{pid}/faces/02.png").headers["content-type"] == "image/png"
+        assert client.delete(f"/projects/{pid}/faces/02.png").json() == {"faces": ["01.png", "03.png"]}
+        assert client.get(f"/projects/{pid}/faces/02.png").status_code == 404
+        assert client.get(f"/projects/{pid}/faces/..%2Freference.png").status_code == 404
+        assert client.get(f"/projects/{pid}").json()["faces"] == ["01.png", "03.png"]
+
         job = _run_job(client, f"/projects/{pid}/wan-package", {"resolution": "480p", "fps": 16, "prompt": "robô"})
         assert job["status"] == "done", job
         detail = client.get(f"/projects/{pid}").json()
@@ -117,7 +156,8 @@ def test_package_and_result_round_trip(settings, video, tmp_path):
             names = set(zf.namelist())
             meta = json.loads(zf.read("job.json"))
             zf.extractall(tmp_path / "pkg")
-        assert {"video.mp4", "reference.png", "job.json"} <= names
+        assert {"video.mp4", "reference.png", "job.json", "faces/01.png", "faces/03.png"} <= names
+        assert meta["files"]["faces"] == ["faces/01.png", "faces/03.png"]
         assert (meta["width"], meta["height"], meta["fps"]) == (832, 464, "16/1")
         assert meta["num_frames"] == 16 and len(meta["source_frame_indices"]) == 16
         assert meta["prompt"] == "robô" and meta["mode"] == "replace" and meta["trimmed_frames"] == 0

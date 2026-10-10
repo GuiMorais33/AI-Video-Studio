@@ -301,13 +301,52 @@ def package(tmp_path_factory) -> Path:
     return tmp / "data" / "projects" / pid / "exports" / "wan_package.zip"
 
 
+# --------------------------------------------------------------------------- FaceFusion falso
+
+FAKE_FACEFUSION = r'''
+"""FaceFusion falso: guarda os argumentos e devolve o vídeo com as cores invertidas."""
+import json, subprocess, sys
+from pathlib import Path
+
+args = sys.argv[1:]
+here = Path(__file__).parent
+(here / "args.json").write_text(json.dumps(args))
+mode = (here / "mode").read_text().strip() if (here / "mode").exists() else "ok"
+value = lambda flag: args[args.index(flag) + 1]
+sources = args[args.index("-s") + 1:args.index("-t")]
+if mode == "noface":
+    print("[FACEFUSION.FACE_SWAPPER] no source face detected", flush=True)
+    sys.exit(1)
+assert all(Path(s).exists() for s in sources), sources
+sys.stdout.write("analysing: 100%|##| 16/16\rprocessing:  50%|#  | 8/16\rprocessing: 100%|##| 16/16\n")
+sys.stdout.flush()
+subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", value("-t"), "-vf", "negate", "-c:v", "libx264",
+                "-pix_fmt", "yuv420p", value("-o")], check=True)
+'''
+
+
+@pytest.fixture
+def fake_facefusion(tmp_path) -> Path:
+    root = tmp_path / "facefusion"
+    root.mkdir()
+    (root / "facefusion.py").write_text(FAKE_FACEFUSION)
+    return root
+
+
 def _config(tmp_path: Path, tiny: dict, wan_dir: Path, input_root: Path, pose: Path, **kw) -> aivs_wan.Config:
+    kw.setdefault("facefusion_dir", str(tmp_path / "facefusion"))
     return aivs_wan.Config(
         repo=str(tiny["repo"]), gguf_file=str(tiny["gguf"]),
         loras=((str(tiny["lightx2v"]), "lightx2v", 1.0, True), (str(tiny["relight"]), "relight", 1.0, False)),
         wan_dir=str(wan_dir), pose_path=str(pose), steps=2, dtype="float32", input_root=str(input_root),
         scratch=str(tmp_path / "scratch"), output=str(tmp_path / "working"), **kw,
     )
+
+
+def _mean_luma(path: Path) -> float:
+    raw = subprocess.run(["ffmpeg", "-v", "error", "-i", str(path), "-frames:v", "1", "-f", "rawvideo",
+                          "-pix_fmt", "gray", "-"], check=True, capture_output=True).stdout
+    return float(np.frombuffer(raw, np.uint8).mean())
 
 
 def _probe(path: Path) -> dict:
@@ -318,7 +357,8 @@ def _probe(path: Path) -> dict:
 
 
 @pytest.mark.parametrize("unzipped", [False, True], ids=["zip", "descompactado"])
-def test_main_end_to_end_on_cpu(tmp_path, tiny_models, tiny_vitpose, wan_dir, package, unzipped, capsys):
+def test_main_end_to_end_on_cpu(tmp_path, tiny_models, tiny_vitpose, wan_dir, package, unzipped, capsys,
+                                fake_facefusion):
     input_root = tmp_path / "input" / "aivs-teste"
     input_root.mkdir(parents=True)
     if unzipped:  # o Kaggle pode descompactar o .zip ao criar o dataset
@@ -353,6 +393,16 @@ def test_main_end_to_end_on_cpu(tmp_path, tiny_models, tiny_vitpose, wan_dir, pa
     summary = json.loads(next(l for l in stdout if l.startswith("AIVS_RELATORIO ")).removeprefix("AIVS_RELATORIO "))
     assert summary["ok"] is True and summary["run_id"] == "r123" and "traceback" not in summary
 
+    # Refino do rosto (FaceFusion falso): o resultado é o vídeo refinado; o do Wan fica na depuração.
+    assert saved["rosto"]["ok"] is True and saved["rosto"]["fotos"] == 1
+    assert "refino_rosto_s" in saved["etapas"]
+    ff_args = json.loads((fake_facefusion / "args.json").read_text())
+    assert ff_args[ff_args.index("-s") + 1].endswith("reference.png")
+    assert ff_args[ff_args.index("--face-selector-mode") + 1] == "one"
+    plain = out / "depuracao" / "wan_sem_refino.mp4"
+    assert abs(_mean_luma(out / "resultado.mp4") - (255 - _mean_luma(plain))) < 8  # cores invertidas
+    assert any("Refinando o rosto: 100%" in l for l in lines)
+
 
 def test_main_reports_errors(tmp_path, tiny_models, tiny_vitpose, wan_dir, capsys):
     empty = tmp_path / "input"
@@ -382,3 +432,56 @@ def test_pose_device_prefers_second_gpu(monkeypatch):
     assert aivs_wan.pose_device() == "cuda:0"
     monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
     assert aivs_wan.pose_device() == "cpu"
+
+
+# --------------------------------------------------------------------------- refino do rosto
+
+def _clip(path: Path) -> Path:
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=64x64:rate=16:duration=0.5",
+                    "-c:v", "libx264", "-pix_fmt", "yuv420p", str(path)], check=True)
+    return path
+
+
+def test_face_sources_prefers_face_photos(tmp_path):
+    (tmp_path / "reference.png").write_bytes(b"x")
+    assert aivs_wan.face_sources(tmp_path) == [tmp_path / "reference.png"]
+    faces = tmp_path / "faces"
+    faces.mkdir()
+    for name in ("02.jpg", "01.png", "nota.txt"):
+        (faces / name).write_bytes(b"x")
+    assert aivs_wan.face_sources(tmp_path) == [faces / "01.png", faces / "02.jpg"]
+
+
+def test_facefusion_command_uses_every_photo(tmp_path):
+    cfg = aivs_wan.Config()
+    photos = [tmp_path / "a.png", tmp_path / "b.png"]
+    cmd = aivs_wan.facefusion_command(cfg, photos, tmp_path / "in.mp4", tmp_path / "out.mp4", tmp_path, "cuda", 1)
+    assert cmd[cmd.index("-s") + 1:cmd.index("-t")] == [str(p) for p in photos]
+    assert cmd[cmd.index("--processors") + 1:cmd.index("--processors") + 3] == ["face_swapper", "face_enhancer"]
+    assert cmd[cmd.index("--execution-providers") + 1] == "cuda" and cmd[cmd.index("--execution-device-ids") + 1] == "1"
+    assert cmd[cmd.index("--face-swapper-model") + 1] == "hyperswap_1a_256"
+
+
+def test_refine_face_falls_back_when_photo_has_no_face(tmp_path, fake_facefusion):
+    (fake_facefusion / "mode").write_text("noface")
+    cfg = aivs_wan.Config(facefusion_dir=str(fake_facefusion), output=str(tmp_path / "working"))
+    report = aivs_wan.Report(tmp_path / "working" / "relatorio.json")
+    out = tmp_path / "working" / "resultado.mp4"
+    ok = aivs_wan.refine_face(cfg, [tmp_path / "r.png"], _clip(tmp_path / "wan.mp4"), out, tmp_path, report)
+    assert ok is False and not out.exists()
+    assert report.data["rosto"]["ok"] is False and "rosto humano" in report.data["avisos"][0]
+    assert "no source face" in (tmp_path / "working" / "depuracao" / "facefusion.log").read_text()
+
+
+def test_refine_face_skips_old_ffmpeg(tmp_path, monkeypatch, fake_facefusion):
+    monkeypatch.setattr(aivs_wan, "ffmpeg_version", lambda: (4, 4))
+    cfg = aivs_wan.Config(facefusion_dir=str(fake_facefusion), output=str(tmp_path / "working"))
+    report = aivs_wan.Report(tmp_path / "working" / "relatorio.json")
+    ok = aivs_wan.refine_face(cfg, [tmp_path / "r.png"], tmp_path / "wan.mp4", tmp_path / "out.mp4", tmp_path, report)
+    assert ok is False and "ffmpeg 4.4" in report.data["avisos"][0]
+    assert not (fake_facefusion / "args.json").exists()  # nem chega a rodar
+
+
+def test_ffmpeg_version_reads_this_machine():
+    version = aivs_wan.ffmpeg_version()
+    assert version is None or (isinstance(version, tuple) and version >= (4, 0))
