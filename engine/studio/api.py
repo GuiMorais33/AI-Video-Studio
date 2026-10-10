@@ -36,6 +36,7 @@ from .wan import (
     delete_face_photo,
     import_result,
     list_face_photos,
+    package_stale,
     save_face_photo,
     save_reference,
 )
@@ -143,6 +144,7 @@ def create_app(
             "exports": {name: (paths.exports / name).exists() for name in EXPORT_FILES},
             "reference": (paths.root / "reference.png").exists(),
             "faces": list_face_photos(paths.root),
+            "wan_package_stale": package_stale(paths.root),
             "wan": {name: (paths.exports / name).exists() for name in WAN_FILES},
         }
 
@@ -325,13 +327,17 @@ def create_app(
         """Fotos extras do rosto para o refino no Kaggle (várias de uma vez)."""
         get_project(project_id)
         root = project_paths(settings, project_id).root
-        saved = []
-        for upload in files:
+        saved, refused = [], []
+        for upload in files:  # uma foto ruim não impede as outras
             tmp = save_upload(upload, root)
             try:
                 saved.append(save_face_photo(tmp, root))
+            except WanError as exc:
+                refused.append(f"{upload.filename}: {exc}")
             finally:
                 tmp.unlink(missing_ok=True)
+        if refused:
+            raise WanError(f"{len(saved)} foto(s) salva(s). Não aceitas: " + "; ".join(refused))
         return {"saved": saved, "faces": list_face_photos(root)}
 
     @app.get("/projects/{project_id}/faces/{name}")
@@ -399,6 +405,8 @@ def create_app(
                 return "Configure o token do Kaggle primeiro."
             if not (root / "exports" / "wan_package.zip").exists():
                 return "Gere o pacote do Wan antes de enviar ao Kaggle."
+            if package_stale(root):
+                return "A imagem ou as fotos do rosto mudaram depois do último pacote. Gere o pacote de novo."
             return None
 
         def run(progress: Callable[..., None]) -> str:

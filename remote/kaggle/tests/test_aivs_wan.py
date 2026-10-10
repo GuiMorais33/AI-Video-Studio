@@ -314,6 +314,13 @@ value = lambda flag: args[args.index(flag) + 1]
 step = "nitidez" if "frame_enhancer" in args else "rosto"
 (here / f"args_{step}.json").write_text(json.dumps(args))
 mode = (here / "mode").read_text().strip() if (here / "mode").exists() else "ok"
+if mode == "hang":  # download travado: um filho (como o curl) segura a saída aberta
+    import time
+    subprocess.Popen(["sleep", "120"])
+    time.sleep(120)
+if mode == "nsfw":  # o filtro de conteúdo recusa: a análise termina e o processamento nunca começa
+    print("[FACEFUSION.CORE] processing step 1 of 1\nanalysing: 100%|##| 16/16 [00:01, rate=0.6]", flush=True)
+    sys.exit(1)
 if step == "rosto":
     sources = args[args.index("-s") + 1:args.index("-t")]
     if mode == "noface":
@@ -420,20 +427,25 @@ def test_main_end_to_end_on_cpu(tmp_path, tiny_models, tiny_vitpose, wan_dir, pa
     assert np.abs(raw[corner] - original[corner]).mean() > np.abs(composed[corner] - original[corner]).mean()
     assert "composicao_s" in saved["etapas"]
 
-    # Refino do rosto (FaceFusion falso): o resultado é o vídeo refinado; o do Wan fica na depuração.
+    # Refino do rosto (FaceFusion falso inverte as cores): o FaceFusion só vê o personagem (fora da
+    # máscara, preto) e a saída volta só para dentro da máscara; o fundo continua o original.
     assert saved["rosto"]["ok"] is True and saved["rosto"]["fotos"] == 1
     assert "refino_rosto_s" in saved["etapas"]
     ff_args = json.loads((fake_facefusion / "args_rosto.json").read_text())
     assert ff_args[ff_args.index("-s") + 1].endswith("reference.png")
     assert ff_args[ff_args.index("--face-selector-mode") + 1] == "one"
-    plain = out / "depuracao" / "wan_sem_refino.mp4"
-    assert abs(_mean_luma(out / "resultado.mp4") - (255 - _mean_luma(plain))) < 8  # cores invertidas
+    target = _first_frame(Path(ff_args[ff_args.index("-t") + 1]))
+    assert target[corner].mean() < 3  # fundo apagado no alvo do FaceFusion
+    refined = _first_frame(Path(cfg.scratch) / "rosto_composto.mp4")
+    assert np.abs(refined[corner] - composed[corner]).mean() < 6  # fundo intacto
+    center = (slice(200, 264), slice(384, 448))  # miolo da máscara (pessoa no centro do quadro)
+    assert np.abs(refined[center] - (255 - composed[center])).mean() < 12  # personagem refinado
     assert any("Refinando o rosto: 100%" in l for l in lines)
 
     # Nitidez: Real-ESRGAN 2x depois do rosto, sobre o vídeo já refinado.
     assert saved["nitidez"] == {"ok": True, "modelo": "real_esrgan_x2", "fator": 2, "provedor": "cpu", "gpu": None}
     sharp_args = json.loads((fake_facefusion / "args_nitidez.json").read_text())
-    assert sharp_args[sharp_args.index("-t") + 1].endswith("rosto.mp4")
+    assert sharp_args[sharp_args.index("-t") + 1].endswith("rosto_composto.mp4")
     assert sharp_args[sharp_args.index("--output-video-scale") + 1] == "2"
 
 
@@ -569,3 +581,24 @@ def test_resize_video_covers_and_crops(tmp_path):
     aivs_wan.resize_video(_clip(tmp_path / "in.mp4"), out, (108, 192))
     info = _probe(out)
     assert (info["width"], info["height"]) == (108, 192)
+
+
+def test_facefusion_timeout_kills_the_whole_group(tmp_path, fake_facefusion):
+    """Download travado: estoura o limite, mata o FaceFusion e os filhos, e segue sem o refino."""
+    import time
+
+    (fake_facefusion / "mode").write_text("hang")
+    cfg = aivs_wan.Config(facefusion_dir=str(fake_facefusion), output=str(tmp_path / "working"), facefusion_timeout_s=2)
+    report = aivs_wan.Report(tmp_path / "working" / "relatorio.json")
+    start = time.monotonic()
+    ok = aivs_wan.refine_face(cfg, [tmp_path / "r.png"], tmp_path / "wan.mp4", tmp_path / "out.mp4", tmp_path, report)
+    assert ok is False and time.monotonic() - start < 30
+    assert "passou de 0 min" in report.data["rosto"]["motivo"]
+
+
+def test_content_filter_reason(tmp_path, fake_facefusion):
+    (fake_facefusion / "mode").write_text("nsfw")
+    cfg = aivs_wan.Config(facefusion_dir=str(fake_facefusion), output=str(tmp_path / "working"))
+    report = aivs_wan.Report(tmp_path / "working" / "relatorio.json")
+    ok = aivs_wan.refine_face(cfg, [tmp_path / "r.png"], tmp_path / "wan.mp4", tmp_path / "out.mp4", tmp_path, report)
+    assert ok is False and report.data["rosto"]["motivo"] == "o filtro de conteúdo do FaceFusion barrou o vídeo"

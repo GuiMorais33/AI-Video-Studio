@@ -149,7 +149,25 @@ def test_package_and_result_round_trip(settings, video, tmp_path):
 
         job = _run_job(client, f"/projects/{pid}/wan-package", {"resolution": "480p", "fps": 16, "prompt": "robô"})
         assert job["status"] == "done", job
+        assert client.get(f"/projects/{pid}").json()["wan_package_stale"] is False
+
+        # Uma foto boa, um arquivo que não é imagem (ex.: HEIC do iPhone) e outra boa: as boas entram.
+        bad = tmp_path / "IMG_0001.heic"
+        bad.write_bytes(b"not an image")
+        with open(faces[0], "rb") as a, open(bad, "rb") as b, open(faces[1], "rb") as c:
+            resp = client.post(f"/projects/{pid}/faces", files=[
+                ("files", ("a.jpg", a)), ("files", ("IMG_0001.heic", b)), ("files", ("c.jpg", c))])
+        assert resp.status_code == 400
+        assert "2 foto(s) salva(s)" in resp.json()["detail"] and "IMG_0001.heic" in resp.json()["detail"]
         detail = client.get(f"/projects/{pid}").json()
+        assert detail["faces"] == ["01.png", "03.png", "04.png", "05.png"]
+        assert detail["wan_package_stale"] is True  # o pacote não tem as fotos novas
+        for name in ("04.png", "05.png"):
+            client.delete(f"/projects/{pid}/faces/{name}")
+        job = _run_job(client, f"/projects/{pid}/wan-package", {"resolution": "480p", "fps": 16, "prompt": "robô"})
+        assert job["status"] == "done", job
+        detail = client.get(f"/projects/{pid}").json()
+        assert detail["wan_package_stale"] is False
         assert detail["reference"] is True and detail["wan"]["wan_package.zip"] is True
 
         with zipfile.ZipFile(root / "exports" / "wan_package.zip") as zf:

@@ -242,11 +242,16 @@ export function WanPanel({ project, locked, run }: Props) {
           ) : (
             <button
               className="primary"
-              disabled={locked || !kaggle?.configured || !wan["wan_package.zip"] || Boolean(kaggle?.running)}
+              disabled={
+                locked || !kaggle?.configured || !wan["wan_package.zip"] || project.wan_package_stale || Boolean(kaggle?.running)
+              }
               onClick={() => run("Enviando ao Kaggle…", () => engine.runOnKaggle(project.id))}
             >
               Gerar no Kaggle
             </button>
+          )}
+          {!remoteJob && project.wan_package_stale && (
+            <p className="status warn">A imagem ou as fotos do rosto mudaram: gere o pacote de novo antes de enviar.</p>
           )}
           {!remoteJob && kaggle?.running && kaggle.running.project_id !== project.id && (
             <p className="status warn">Outro projeto está usando o Kaggle agora (um por vez).</p>

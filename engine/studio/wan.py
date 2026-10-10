@@ -110,7 +110,7 @@ def _save_image(upload: Path, dest: Path, *, min_side: int, label: str) -> tuple
             else:
                 img = img.convert("RGB")
     except (OSError, Image.DecompressionBombError) as exc:
-        raise WanError("O arquivo enviado não é uma imagem válida.") from exc
+        raise WanError("O arquivo enviado não é uma imagem válida (fotos HEIC do iPhone: converta para JPG).") from exc
     if min(img.size) < min_side:
         raise WanError(f"{label} muito pequena (mínimo {min_side} px no menor lado).")
     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -140,6 +140,17 @@ def save_face_photo(upload: Path, root: Path) -> str:
     name = f"{number:02d}.png"
     _save_image(upload, root / FACES_DIR / name, min_side=128, label="Foto do rosto")
     return name
+
+
+def package_stale(root: Path) -> bool:
+    """A foto principal ou as do rosto mudaram depois do último pacote: o Kaggle receberia as antigas.
+
+    A pasta faces/ muda de data quando uma foto entra (os.replace) ou sai (unlink)."""
+    package = root / "exports" / "wan_package.zip"
+    if not package.exists():
+        return False
+    built = package.stat().st_mtime
+    return any(p.exists() and p.stat().st_mtime > built for p in (root / "reference.png", root / FACES_DIR))
 
 
 def delete_face_photo(root: Path, name: str) -> None:

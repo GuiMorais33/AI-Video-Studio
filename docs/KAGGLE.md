@@ -58,16 +58,23 @@ Pode deixar a página fechada enquanto roda. Só um notebook por vez.
 | Texto | umT5 em fp16; depois é liberado da memória |
 | Geração | `WanAnimatePipeline` do diffusers 0.41.0 com: transformer GGUF Q4_K_M, LoRA lightx2v (6 passos), LoRA de reiluminação, offload em blocos, fp16 |
 | Composição | O personagem gerado é colado sobre o vídeo **original**, só dentro da máscara e com borda suave: o fundo fica intacto (o Wan redesenha o quadro inteiro e o fundo sairia levemente diferente) |
-| Refino do rosto | FaceFusion 3.9.1 na 2ª T4: troca o rosto principal de cada quadro pelo das **fotos do rosto** (hyperswap, reforço de detalhe 512, todas as fotos combinadas) e restaura a nitidez (GFPGAN), respeitando mãos e cabelo na frente do rosto |
+| Refino do rosto | FaceFusion 3.9.1 na 2ª T4: troca o rosto principal de cada quadro pelo das **fotos do rosto** (hyperswap, reforço de detalhe 512, todas as fotos combinadas) e restaura a nitidez (GFPGAN), respeitando mãos e cabelo na frente do rosto. O FaceFusion só vê o personagem (fora da máscara fica preto), então não troca o rosto de outra pessoa do fundo; o resultado volta a ser colado só dentro da máscara |
 | Nitidez e tamanho | Real-ESRGAN 2× (pelo FaceFusion) e ajuste final ao tamanho dos Reels: **1080×1920** em pé, 1920×1080 deitado |
 | Saída | `resultado.mp4` (pronto), `relatorio.json` (tempos, VRAM, avisos, erro) e prévias em `depuracao/`: `wan_bruto.mp4` (o Wan puro), `wan_sem_refino.mp4` (composto, antes do rosto) e os logs do FaceFusion |
 
 Cada etapa do acabamento parte do vídeo anterior: se uma falhar, o resultado segue sem ela, com aviso.
+Logo depois da composição já existe um `resultado.mp4` provisório, então uma queda no acabamento
+não perde a geração.
 
 O refino é o padrão. Ele fica de fora, com aviso no relatório, quando:
 - as fotos não têm um rosto humano detectável (personagem robô, de capacete);
 - o filtro de conteúdo adulto do FaceFusion barra o vídeo. Esse filtro fica ligado e não pega vídeo
-  comum: no vídeo de dança dos testes, nenhum quadro foi marcado.
+  comum: no vídeo de dança dos testes, nenhum quadro foi marcado;
+- uma etapa do FaceFusion passa de 30 min (ex.: download de modelo travado). O processo é encerrado
+  e o vídeo segue sem ela.
+
+Depois de trocar a imagem do personagem ou as fotos do rosto, **gere o pacote de novo**: o botão
+"Gerar no Kaggle" fica bloqueado enquanto o pacote estiver desatualizado.
 
 **Downloads por sessão: cerca de 30 GB.** Ficam em `/kaggle/tmp`, não na saída.
 

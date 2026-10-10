@@ -30,8 +30,10 @@ import os
 import platform
 import re
 import shutil
+import signal
 import subprocess
 import sys
+import threading
 import time
 import traceback
 import zipfile
@@ -92,6 +94,8 @@ class Config:
     face_swapper_weight: float = 0.75
     face_enhancer_model: str = "gfpgan_1.4"
     face_enhancer_blend: int = 80
+    # Limite de cada etapa do FaceFusion (inclui baixar os modelos); ao estourar, segue sem ela.
+    facefusion_timeout_s: int = 1800
     # Acabamento: o personagem gerado é colado sobre o vídeo original (fundo intacto, borda suave),
     # a resolução dobra com Real-ESRGAN e o vídeo sai no tamanho dos Reels.
     composite_background: bool = True
@@ -647,20 +651,42 @@ def run_facefusion(cfg: Config, step: str, sources: list[Path], video: Path, out
     log_path.parent.mkdir(parents=True, exist_ok=True)
     command = facefusion_command(cfg, step, sources, video, output, work, provider, device_id)
     with open(log_path, "wb") as log:
-        proc = subprocess.Popen(command, cwd=root, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-        last = -1
-        # read1: devolve o que já chegou, sem esperar encher o bloco (o progresso fica em dia).
-        for chunk in iter(lambda: proc.stdout.read1(4096), b""):
-            log.write(chunk)
-            # As barras de progresso (tqdm) usam \r: pega o último "processing: NN%" do pedaço.
-            found = FACE_PROGRESS_RE.findall(chunk.decode(errors="replace"))
-            if found and int(found[-1]) != last:
-                last = int(found[-1])
-                on_progress(last / 100)
-        code = proc.wait()
+        # Grupo de processos próprio: se passar do tempo (ex.: download de modelo travado), mata o
+        # FaceFusion e o que ele abriu (curl, ffmpeg). Sem isso a sessão ficaria presa até o limite de 12 h.
+        proc = subprocess.Popen(command, cwd=root, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                start_new_session=True)
+        timed_out = threading.Event()
+
+        def kill() -> None:
+            timed_out.set()
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+
+        timer = threading.Timer(cfg.facefusion_timeout_s, kill)
+        timer.daemon = True
+        timer.start()
+        try:
+            last = -1
+            # read1: devolve o que já chegou, sem esperar encher o bloco (o progresso fica em dia).
+            for chunk in iter(lambda: proc.stdout.read1(4096), b""):
+                log.write(chunk)
+                # As barras de progresso (tqdm) usam \r: pega o último "processing: NN%" do pedaço.
+                found = FACE_PROGRESS_RE.findall(chunk.decode(errors="replace"))
+                if found and int(found[-1]) != last:
+                    last = int(found[-1])
+                    on_progress(last / 100)
+            code = proc.wait()
+        finally:
+            timer.cancel()
+    text = log_path.read_text(errors="replace").lower()
+    device = device_id if provider == "cuda" else None
+    if timed_out.is_set():
+        return FaceFusionRun(False, code, text, provider, device,
+                             f"passou de {cfg.facefusion_timeout_s // 60} min sem terminar (download de modelo travado?)")
     ok = code == 0 and output.exists() and output.stat().st_size > 0
-    return FaceFusionRun(ok, code, log_path.read_text(errors="replace").lower(), provider,
-                         device_id if provider == "cuda" else None)
+    return FaceFusionRun(ok, code, text, provider, device)
 
 
 def refine_face(cfg: Config, sources: list[Path], video: Path, output: Path, work: Path, report: Report,
@@ -681,7 +707,8 @@ def refine_face(cfg: Config, sources: list[Path], video: Path, output: Path, wor
         reason = run_.error
     elif "no source face" in run_.log:
         reason = "as fotos não têm um rosto humano detectável (personagem sem rosto?)"
-    elif "analysing" in run_.log and "processing" not in run_.log:
+    elif "analysing: 100%" in run_.log and not FACE_PROGRESS_RE.search(run_.log):
+        # A análise terminou e a barra "processing: NN%" nunca apareceu: o filtro recusou o vídeo.
         reason = "o filtro de conteúdo do FaceFusion barrou o vídeo"
     else:
         reason = f"o FaceFusion terminou com código {run_.code} (veja depuracao/facefusion_rosto.log)"
@@ -705,6 +732,15 @@ def upscale_video(cfg: Config, video: Path, output: Path, work: Path, report: Re
 
 
 # --------------------------------------------------------------------------- composição e tamanho final
+
+def to_uint8(frames) -> list[np.ndarray]:
+    """Quadros 0..1 (saída do Wan) ou já uint8 -> lista de uint8."""
+    out = []
+    for frame in frames:
+        frame = np.asarray(frame)
+        out.append(frame if frame.dtype == np.uint8 else (np.clip(frame, 0, 1) * 255).round().astype(np.uint8))
+    return out
+
 
 def soft_masks(masks: list[np.ndarray], feather: int) -> list[np.ndarray]:
     """Máscaras 0..1 com a borda esfumada (desfoque gaussiano), para colar sem emenda."""
@@ -861,21 +897,36 @@ def main(cfg: Config | None = None) -> dict:
             torch.cuda.empty_cache()
         debug = out_dir / "depuracao"
         write_video(result, job["fps"], debug / "wan_bruto.mp4")
+        base = to_uint8(result)
+        del result
         if cfg.composite_background:
             with report.etapa("composicao"):
                 progress(0.86, "Colando o personagem sobre o vídeo original")
-                result = composite_background(result, frames, gen_masks, cfg.composite_feather)
+                base = composite_background(base, frames, gen_masks, cfg.composite_feather)
         # Cada etapa de acabamento parte do vídeo anterior; se falhar, o anterior segue adiante.
         current = debug / "wan_sem_refino.mp4"
-        write_video(result, job["fps"], current)
-        del result
+        write_video(base, job["fps"], current)
+        final = out_dir / "resultado.mp4"
+        # Resultado provisório desde já: se algo adiante travar ou cair, ainda há um vídeo na saída.
+        shutil.copyfile(current, final)
         if cfg.face_refine:
             with report.etapa("refino_rosto"):
                 progress(0.87, "Refinando o rosto com as fotos (FaceFusion)")
+                # Só o personagem vai para o FaceFusion (fora da máscara, preto): ninguém do fundo tem o
+                # rosto trocado, e o maior rosto que sobra é sempre o do personagem.
+                target = scratch / "alvo_rosto.mp4"
+                write_video([f * m[..., None] for f, m in zip(base, gen_masks)], job["fps"], target)
                 face_video = scratch / "rosto.mp4"
-                if refine_face(cfg, face_sources(job_dir), current, face_video, scratch, report,
+                if refine_face(cfg, face_sources(job_dir), target, face_video, scratch, report,
                                on_progress=lambda f: progress(0.87 + 0.07 * f, f"Refinando o rosto: {round(f * 100)}%")):
-                    current = face_video
+                    refined = read_video(face_video, int(job["width"]), int(job["height"]))
+                    if len(refined) == len(base):
+                        base = composite_background(refined, base, gen_masks, cfg.composite_feather)
+                        current = scratch / "rosto_composto.mp4"
+                        write_video(base, job["fps"], current)
+                    else:
+                        report.aviso(f"Refino do rosto descartado: voltou com {len(refined)} de {len(base)} quadros.")
+                        report.data["rosto"]["ok"] = False
         if cfg.upscale:
             with report.etapa("nitidez"):
                 progress(0.94, "Aumentando a resolução (Real-ESRGAN)")
@@ -883,11 +934,12 @@ def main(cfg: Config | None = None) -> dict:
                 if upscale_video(cfg, current, sharp_video, scratch, report,
                                  on_progress=lambda f: progress(0.94 + 0.04 * f, f"Aumentando a resolução: {round(f * 100)}%")):
                     current = sharp_video
-        final = out_dir / "resultado.mp4"
         size = output_size(int(job["width"]), int(job["height"]), cfg.output_resolution)
         with report.etapa("tamanho_final"):
             if size:
-                resize_video(current, final, size)
+                sized = scratch / "final.mp4"
+                resize_video(current, sized, size)
+                shutil.move(sized, final)  # troca o provisório só com o vídeo final já pronto
             else:
                 shutil.copyfile(current, final)
         report.data["saida"] = {"largura": size[0] if size else int(job["width"]),

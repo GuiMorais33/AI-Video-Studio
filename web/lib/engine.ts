@@ -53,6 +53,8 @@ export interface Project extends ProjectSummary {
   reference: boolean;
   /** Fotos extras do rosto (01.png, 02.png...), usadas no refino do rosto no Kaggle. */
   faces: string[];
+  /** A imagem ou as fotos do rosto mudaram depois do último pacote: é preciso gerar de novo. */
+  wan_package_stale: boolean;
   wan: Record<WanFile, boolean>;
 }
 
