@@ -57,8 +57,12 @@ Pode deixar a página fechada enquanto roda. Só um notebook por vez.
 | Pose e rosto | ViTPose oficial do Wan, guiado pela caixa da **sua** máscara (acerta a pessoa certa com várias no vídeo); rosto 512×512 |
 | Texto | umT5 em fp16; depois é liberado da memória |
 | Geração | `WanAnimatePipeline` do diffusers 0.41.0 com: transformer GGUF Q4_K_M, LoRA lightx2v (6 passos), LoRA de reiluminação, offload em blocos, fp16 |
+| Composição | O personagem gerado é colado sobre o vídeo **original**, só dentro da máscara e com borda suave: o fundo fica intacto (o Wan redesenha o quadro inteiro e o fundo sairia levemente diferente) |
 | Refino do rosto | FaceFusion 3.9.1 na 2ª T4: troca o rosto principal de cada quadro pelo das **fotos do rosto** (hyperswap, reforço de detalhe 512, todas as fotos combinadas) e restaura a nitidez (GFPGAN), respeitando mãos e cabelo na frente do rosto |
-| Saída | `resultado.mp4` (já com o rosto refinado), `relatorio.json` (tempos, VRAM, avisos, erro) e prévias em `depuracao/`, inclusive `wan_sem_refino.mp4` e `facefusion.log` |
+| Nitidez e tamanho | Real-ESRGAN 2× (pelo FaceFusion) e ajuste final ao tamanho dos Reels: **1080×1920** em pé, 1920×1080 deitado |
+| Saída | `resultado.mp4` (pronto), `relatorio.json` (tempos, VRAM, avisos, erro) e prévias em `depuracao/`: `wan_bruto.mp4` (o Wan puro), `wan_sem_refino.mp4` (composto, antes do rosto) e os logs do FaceFusion |
+
+Cada etapa do acabamento parte do vídeo anterior: se uma falhar, o resultado segue sem ela, com aviso.
 
 O refino é o padrão. Ele fica de fora, com aviso no relatório, quando:
 - as fotos não têm um rosto humano detectável (personagem robô, de capacete);
@@ -73,7 +77,7 @@ O refino é o padrão. Ele fica de fora, com aviso no relatório, quando:
 | umT5 + CLIP + VAE (repositório diffusers oficial) | ~13 GB |
 | ViTPose-H wholebody (repositório oficial) | ~2,5 GB |
 | LoRAs (lightx2v + relight, Kijai) | ~1 GB |
-| FaceFusion (hyperswap, GFPGAN, detectores, filtro de conteúdo) | ~1,8 GB |
+| FaceFusion (hyperswap, GFPGAN, Real-ESRGAN, detectores, filtro de conteúdo) | ~1,9 GB |
 
 **Tempo medido numa T4 (09/10/2026):** 34 min para um clipe de 4,8 s a 16 fps (77 quadros,
 464×832). Com as 30 h semanais, dá para uns 50 clipes por semana.

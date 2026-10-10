@@ -11,9 +11,11 @@ imagem de referência e job.json) e:
 3. codifica o texto (umT5) e libera a memória;
 4. gera com o WanAnimatePipeline do diffusers: transformer GGUF + LoRAs de poucos
    passos + offload em blocos, em fp16 (a T4 não tem bf16 nativo);
-5. troca o rosto gerado pelo rosto das fotos, quadro a quadro, e restaura a nitidez
+5. cola o personagem gerado sobre o vídeo original (fundo intacto, borda suave);
+6. troca o rosto gerado pelo rosto das fotos, quadro a quadro, e restaura a nitidez
    (FaceFusion: hyperswap + GFPGAN); se não der (foto sem rosto humano), segue sem;
-6. grava resultado.mp4, prévias de depuração e relatorio.json em /kaggle/working.
+7. dobra a resolução (Real-ESRGAN, pelo FaceFusion) e ajusta ao tamanho dos Reels (1080x1920);
+8. grava resultado.mp4, prévias de depuração e relatorio.json em /kaggle/working.
 
 Todo caminho de modelo aceita um arquivo/pasta local no lugar do Hugging Face: é assim
 que os testes rodam este fluxo inteiro na CPU com modelos minúsculos.
@@ -90,6 +92,15 @@ class Config:
     face_swapper_weight: float = 0.75
     face_enhancer_model: str = "gfpgan_1.4"
     face_enhancer_blend: int = 80
+    # Acabamento: o personagem gerado é colado sobre o vídeo original (fundo intacto, borda suave),
+    # a resolução dobra com Real-ESRGAN e o vídeo sai no tamanho dos Reels.
+    composite_background: bool = True
+    composite_feather: int = 6
+    upscale: bool = True
+    upscale_model: str = "real_esrgan_x2"
+    upscale_factor: int = 2
+    upscale_blend: int = 80
+    output_resolution: str | None = "1080p"  # 1080x1920 (em pé), "720p" ou None (tamanho da geração)
     # Pastas
     input_root: str = "/kaggle/input"
     scratch: str = "/kaggle/tmp"
@@ -545,27 +556,45 @@ def facefusion_dir(cfg: Config, work: Path) -> Path:
     return root
 
 
-def facefusion_command(cfg: Config, sources: list[Path], target: Path, output: Path, work: Path,
+def facefusion_command(cfg: Config, step: str, sources: list[Path], target: Path, output: Path, work: Path,
                        provider: str, device_id: int) -> list[str]:
-    """headless-run do FaceFusion: troca o rosto principal de cada quadro pelo das fotos e restaura."""
-    return [
-        sys.executable, "facefusion.py", "headless-run",
-        "-s", *(str(p) for p in sources), "-t", str(target), "-o", str(output),
-        "--temp-path", str(work / "ff-temp"), "--jobs-path", str(work / "ff-jobs"),
-        "--processors", "face_swapper", "face_enhancer",
-        "--face-swapper-model", cfg.face_swapper_model,
-        "--face-swapper-pixel-boost", cfg.face_swapper_pixel_boost,
-        "--face-swapper-weight", str(cfg.face_swapper_weight),
-        "--face-enhancer-model", cfg.face_enhancer_model,
-        "--face-enhancer-blend", str(cfg.face_enhancer_blend),
-        "--face-detector-model", "yolo_face", "--face-detector-size", "640x640", "--face-detector-score", "0.5",
-        "--face-landmarker-model", "2dfan4", "--face-landmarker-score", "0.5",
-        # Só o rosto maior de cada quadro: o personagem, não quem está ao fundo.
-        "--face-selector-mode", "one", "--face-selector-order", "large-small",
-        "--face-tracker-score", "0.3", "--target-frame-amount", "2",
-        # Caixa + oclusão: mantém o rosto inteiro e respeita mãos e cabelo na frente.
-        "--face-mask-types", "box", "occlusion", "--face-occluder-model", "xseg_1",
-        "--face-mask-blur", "0.3", "--face-mask-padding", "0",
+    """headless-run do FaceFusion para uma etapa:
+    - "rosto": troca o rosto principal de cada quadro pelo das fotos e restaura a nitidez;
+    - "nitidez": aumenta a resolução do vídeo inteiro (Real-ESRGAN), sem fotos.
+    """
+    command = [sys.executable, "facefusion.py", "headless-run"]
+    if sources:
+        command += ["-s", *(str(p) for p in sources)]
+    command += [
+        "-t", str(target), "-o", str(output),
+        "--temp-path", str(work / f"ff-temp-{step}"), "--jobs-path", str(work / f"ff-jobs-{step}"),
+    ]
+    if step == "rosto":
+        command += [
+            "--processors", "face_swapper", "face_enhancer",
+            "--face-swapper-model", cfg.face_swapper_model,
+            "--face-swapper-pixel-boost", cfg.face_swapper_pixel_boost,
+            "--face-swapper-weight", str(cfg.face_swapper_weight),
+            "--face-enhancer-model", cfg.face_enhancer_model,
+            "--face-enhancer-blend", str(cfg.face_enhancer_blend),
+            "--face-detector-model", "yolo_face", "--face-detector-size", "640x640", "--face-detector-score", "0.5",
+            "--face-landmarker-model", "2dfan4", "--face-landmarker-score", "0.5",
+            # Só o rosto maior de cada quadro: o personagem, não quem está ao fundo.
+            "--face-selector-mode", "one", "--face-selector-order", "large-small",
+            "--face-tracker-score", "0.3", "--target-frame-amount", "2",
+            # Caixa + oclusão: mantém o rosto inteiro e respeita mãos e cabelo na frente.
+            "--face-mask-types", "box", "occlusion", "--face-occluder-model", "xseg_1",
+            "--face-mask-blur", "0.3", "--face-mask-padding", "0",
+        ]
+    elif step == "nitidez":
+        command += [
+            "--processors", "frame_enhancer",
+            "--frame-enhancer-model", cfg.upscale_model, "--frame-enhancer-blend", str(cfg.upscale_blend),
+            "--output-video-scale", str(cfg.upscale_factor),
+        ]
+    else:
+        raise ValueError(f"etapa do FaceFusion desconhecida: {step}")
+    return command + [
         "--workflow-strategy", "memory",
         "--output-video-encoder", "libx264", "--output-video-quality", "90", "--output-video-preset", "slow",
         "--output-audio-volume", "0",
@@ -584,37 +613,39 @@ def cuda_library_path() -> str:
     return ":".join(str(p) for base in bases for p in sorted(Path(base).glob("nvidia/*/lib")) if p.is_dir())
 
 
-def refine_face(cfg: Config, sources: list[Path], video: Path, output: Path, work: Path, report: Report,
-                on_progress: Callable[[float], None] = lambda f: None) -> bool:
-    """Troca o rosto gerado pelo rosto das fotos, quadro a quadro, e restaura a nitidez (FaceFusion).
+@dataclass
+class FaceFusionRun:
+    ok: bool
+    code: int
+    log: str  # texto do log, em minúsculas
+    provider: str
+    device_id: int | None
+    error: str = ""  # quando nem chegou a rodar
 
-    Quando não dá (foto sem rosto humano, filtro de conteúdo do FaceFusion, ffmpeg antigo), registra o
-    motivo como aviso e devolve False: o vídeo do Wan continua sendo o resultado.
-    """
-    def skip(reason: str) -> bool:
-        report.aviso(f"Refino do rosto não aplicado: {reason}. O resultado saiu sem o refino.")
-        report.data["rosto"] = {"ok": False, "motivo": reason}
-        return False
 
-    version = ffmpeg_version()
-    if version is not None and version < (5, 1):
-        return skip(f"o ffmpeg {version[0]}.{version[1]} desta máquina é antigo (o FaceFusion pede 5.1+)")
+def run_facefusion(cfg: Config, step: str, sources: list[Path], video: Path, output: Path, work: Path,
+                   on_progress: Callable[[float], None] = lambda f: None) -> FaceFusionRun:
+    """Roda uma etapa do FaceFusion num processo à parte, com log em depuracao/facefusion_<etapa>.log."""
     torch = _torch()
     provider = "cuda" if torch.cuda.is_available() else "cpu"
     # Na T4 x2, a 2ª GPU (a da pose) está livre: a 1ª ainda guarda o que sobrou da geração.
     device_id = 1 if torch.cuda.device_count() > 1 else 0
+    version = ffmpeg_version()
+    if version is not None and version < (5, 1):
+        return FaceFusionRun(False, -1, "", provider, None,
+                             f"o ffmpeg {version[0]}.{version[1]} desta máquina é antigo (o FaceFusion pede 5.1+)")
     try:
         root = facefusion_dir(cfg, work)
     except Exception as exc:
-        return skip(f"não foi possível baixar o FaceFusion ({type(exc).__name__})")
+        return FaceFusionRun(False, -1, "", provider, None, f"não foi possível baixar o FaceFusion ({type(exc).__name__})")
     env = {**os.environ, "CONDA_READY": "1"}  # não reinicia o Python em ambientes conda
     if provider == "cuda":
         env["LD_LIBRARY_PATH"] = ":".join(filter(None, [cuda_library_path(), env.get("LD_LIBRARY_PATH")]))
     output.parent.mkdir(parents=True, exist_ok=True)
     output.unlink(missing_ok=True)
-    log_path = Path(cfg.output) / "depuracao" / "facefusion.log"
+    log_path = Path(cfg.output) / "depuracao" / f"facefusion_{step}.log"
     log_path.parent.mkdir(parents=True, exist_ok=True)
-    command = facefusion_command(cfg, sources, video, output, work, provider, device_id)
+    command = facefusion_command(cfg, step, sources, video, output, work, provider, device_id)
     with open(log_path, "wb") as log:
         proc = subprocess.Popen(command, cwd=root, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         last = -1
@@ -627,19 +658,101 @@ def refine_face(cfg: Config, sources: list[Path], video: Path, output: Path, wor
                 last = int(found[-1])
                 on_progress(last / 100)
         code = proc.wait()
-    text = log_path.read_text(errors="replace").lower()
-    if code == 0 and output.exists() and output.stat().st_size > 0:
+    ok = code == 0 and output.exists() and output.stat().st_size > 0
+    return FaceFusionRun(ok, code, log_path.read_text(errors="replace").lower(), provider,
+                         device_id if provider == "cuda" else None)
+
+
+def refine_face(cfg: Config, sources: list[Path], video: Path, output: Path, work: Path, report: Report,
+                on_progress: Callable[[float], None] = lambda f: None) -> bool:
+    """Troca o rosto gerado pelo rosto das fotos, quadro a quadro, e restaura a nitidez (FaceFusion).
+
+    Quando não dá (foto sem rosto humano, filtro de conteúdo do FaceFusion, ffmpeg antigo), registra o
+    motivo como aviso e devolve False: o vídeo anterior continua sendo o resultado.
+    """
+    run_ = run_facefusion(cfg, "rosto", sources, video, output, work, on_progress)
+    if run_.ok:
         report.data["rosto"] = {
             "ok": True, "fotos": len(sources), "trocador": cfg.face_swapper_model,
-            "restaurador": cfg.face_enhancer_model, "provedor": provider,
-            "gpu": device_id if provider == "cuda" else None,
+            "restaurador": cfg.face_enhancer_model, "provedor": run_.provider, "gpu": run_.device_id,
         }
         return True
-    if "no source face" in text:
-        return skip("as fotos não têm um rosto humano detectável (personagem sem rosto?)")
-    if "analysing" in text and "processing" not in text:
-        return skip("o filtro de conteúdo do FaceFusion barrou o vídeo")
-    return skip(f"o FaceFusion terminou com código {code} (veja depuracao/facefusion.log)")
+    if run_.error:
+        reason = run_.error
+    elif "no source face" in run_.log:
+        reason = "as fotos não têm um rosto humano detectável (personagem sem rosto?)"
+    elif "analysing" in run_.log and "processing" not in run_.log:
+        reason = "o filtro de conteúdo do FaceFusion barrou o vídeo"
+    else:
+        reason = f"o FaceFusion terminou com código {run_.code} (veja depuracao/facefusion_rosto.log)"
+    report.aviso(f"Refino do rosto não aplicado: {reason}. O resultado saiu sem o refino.")
+    report.data["rosto"] = {"ok": False, "motivo": reason}
+    return False
+
+
+def upscale_video(cfg: Config, video: Path, output: Path, work: Path, report: Report,
+                  on_progress: Callable[[float], None] = lambda f: None) -> bool:
+    """Aumenta a resolução com Real-ESRGAN (FaceFusion). Se falhar, o vídeo segue no tamanho original."""
+    run_ = run_facefusion(cfg, "nitidez", [], video, output, work, on_progress)
+    if run_.ok:
+        report.data["nitidez"] = {"ok": True, "modelo": cfg.upscale_model, "fator": cfg.upscale_factor,
+                                  "provedor": run_.provider, "gpu": run_.device_id}
+        return True
+    reason = run_.error or f"o FaceFusion terminou com código {run_.code} (veja depuracao/facefusion_nitidez.log)"
+    report.aviso(f"Aumento de resolução não aplicado: {reason}.")
+    report.data["nitidez"] = {"ok": False, "motivo": reason}
+    return False
+
+
+# --------------------------------------------------------------------------- composição e tamanho final
+
+def soft_masks(masks: list[np.ndarray], feather: int) -> list[np.ndarray]:
+    """Máscaras 0..1 com a borda esfumada (desfoque gaussiano), para colar sem emenda."""
+    from PIL import ImageFilter
+
+    out = []
+    for mask in masks:
+        img = Image.fromarray(mask.astype(np.uint8) * 255, mode="L")
+        if feather > 0:
+            img = img.filter(ImageFilter.GaussianBlur(feather))
+        out.append(np.asarray(img, np.float32)[..., None] / 255.0)
+    return out
+
+
+def composite_background(generated, originals: list[np.ndarray], masks: list[np.ndarray], feather: int) -> list[np.ndarray]:
+    """Personagem gerado só dentro da máscara (com borda suave); fora dela, o quadro original intacto.
+
+    No modo replace o Wan redesenha o quadro inteiro, e o fundo sai levemente diferente do vídeo.
+    """
+    out = []
+    for gen, orig, alpha in zip(generated, originals, soft_masks(masks, feather)):
+        gen = np.asarray(gen)
+        if gen.dtype != np.uint8:
+            gen = (np.clip(gen, 0, 1) * 255.0).round()
+        mixed = alpha * gen.astype(np.float32) + (1.0 - alpha) * orig.astype(np.float32)
+        out.append(np.clip(mixed, 0, 255).round().astype(np.uint8))
+    return out
+
+
+def output_size(width: int, height: int, target: str | None) -> tuple[int, int] | None:
+    """Tamanho final no formato dos Reels: 1080x1920 em pé, 1920x1080 deitado, 1080x1080 quadrado."""
+    if not target:
+        return None
+    long_side, short_side = {"1080p": (1920, 1080), "720p": (1280, 720)}[target]
+    if height > width:
+        return short_side, long_side
+    if width > height:
+        return long_side, short_side
+    return short_side, short_side
+
+
+def resize_video(video: Path, output: Path, size: tuple[int, int]) -> None:
+    """Escala para cobrir o tamanho final e corta o excesso no centro (sem faixas pretas)."""
+    width, height = size
+    run(["ffmpeg", "-v", "error", "-y", "-i", str(video),
+         "-vf", f"scale={width}:{height}:force_original_aspect_ratio=increase:flags=lanczos,crop={width}:{height},setsar=1",
+         "-c:v", "libx264", "-preset", "slow", "-crf", "14", "-pix_fmt", "yuv420p", "-movflags", "+faststart",
+         str(output)])
 
 
 # --------------------------------------------------------------------------- saída
@@ -747,19 +860,38 @@ def main(cfg: Config | None = None) -> dict:
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
         debug = out_dir / "depuracao"
-        wan_video = debug / "wan_sem_refino.mp4"
-        write_video(result, job["fps"], wan_video)
-        final = out_dir / "resultado.mp4"
-        refined = False
+        write_video(result, job["fps"], debug / "wan_bruto.mp4")
+        if cfg.composite_background:
+            with report.etapa("composicao"):
+                progress(0.86, "Colando o personagem sobre o vídeo original")
+                result = composite_background(result, frames, gen_masks, cfg.composite_feather)
+        # Cada etapa de acabamento parte do vídeo anterior; se falhar, o anterior segue adiante.
+        current = debug / "wan_sem_refino.mp4"
+        write_video(result, job["fps"], current)
+        del result
         if cfg.face_refine:
             with report.etapa("refino_rosto"):
-                progress(0.86, "Refinando o rosto com as fotos (FaceFusion)")
-                refined = refine_face(
-                    cfg, face_sources(job_dir), wan_video, final, scratch, report,
-                    on_progress=lambda f: progress(0.86 + 0.12 * f, f"Refinando o rosto: {round(f * 100)}%"),
-                )
-        if not refined:
-            shutil.copyfile(wan_video, final)
+                progress(0.87, "Refinando o rosto com as fotos (FaceFusion)")
+                face_video = scratch / "rosto.mp4"
+                if refine_face(cfg, face_sources(job_dir), current, face_video, scratch, report,
+                               on_progress=lambda f: progress(0.87 + 0.07 * f, f"Refinando o rosto: {round(f * 100)}%")):
+                    current = face_video
+        if cfg.upscale:
+            with report.etapa("nitidez"):
+                progress(0.94, "Aumentando a resolução (Real-ESRGAN)")
+                sharp_video = scratch / "nitidez.mp4"
+                if upscale_video(cfg, current, sharp_video, scratch, report,
+                                 on_progress=lambda f: progress(0.94 + 0.04 * f, f"Aumentando a resolução: {round(f * 100)}%")):
+                    current = sharp_video
+        final = out_dir / "resultado.mp4"
+        size = output_size(int(job["width"]), int(job["height"]), cfg.output_resolution)
+        with report.etapa("tamanho_final"):
+            if size:
+                resize_video(current, final, size)
+            else:
+                shutil.copyfile(current, final)
+        report.data["saida"] = {"largura": size[0] if size else int(job["width"]),
+                                "altura": size[1] if size else int(job["height"])}
         with report.etapa("exportacao"):
             write_video([np.asarray(p) for p in poses], job["fps"], debug / "pose.mp4", crf=23)
             write_video([np.asarray(f) for f in faces], job["fps"], debug / "rosto.mp4", crf=23)

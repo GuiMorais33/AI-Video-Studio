@@ -304,23 +304,30 @@ def package(tmp_path_factory) -> Path:
 # --------------------------------------------------------------------------- FaceFusion falso
 
 FAKE_FACEFUSION = r'''
-"""FaceFusion falso: guarda os argumentos e devolve o vídeo com as cores invertidas."""
+"""FaceFusion falso: guarda os argumentos de cada etapa. Rosto: inverte as cores. Nitidez: dobra o tamanho."""
 import json, subprocess, sys
 from pathlib import Path
 
 args = sys.argv[1:]
 here = Path(__file__).parent
-(here / "args.json").write_text(json.dumps(args))
-mode = (here / "mode").read_text().strip() if (here / "mode").exists() else "ok"
 value = lambda flag: args[args.index(flag) + 1]
-sources = args[args.index("-s") + 1:args.index("-t")]
-if mode == "noface":
-    print("[FACEFUSION.FACE_SWAPPER] no source face detected", flush=True)
-    sys.exit(1)
-assert all(Path(s).exists() for s in sources), sources
+step = "nitidez" if "frame_enhancer" in args else "rosto"
+(here / f"args_{step}.json").write_text(json.dumps(args))
+mode = (here / "mode").read_text().strip() if (here / "mode").exists() else "ok"
+if step == "rosto":
+    sources = args[args.index("-s") + 1:args.index("-t")]
+    if mode == "noface":
+        print("[FACEFUSION.FACE_SWAPPER] no source face detected", flush=True)
+        sys.exit(1)
+    assert all(Path(s).exists() for s in sources), sources
+    video_filter = "negate"
+else:
+    assert "-s" not in args
+    scale = int(value("--output-video-scale"))
+    video_filter = f"scale=iw*{scale}:ih*{scale}"
 sys.stdout.write("analysing: 100%|##| 16/16\rprocessing:  50%|#  | 8/16\rprocessing: 100%|##| 16/16\n")
 sys.stdout.flush()
-subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", value("-t"), "-vf", "negate", "-c:v", "libx264",
+subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", value("-t"), "-vf", video_filter, "-c:v", "libx264",
                 "-pix_fmt", "yuv420p", value("-o")], check=True)
 '''
 
@@ -341,6 +348,13 @@ def _config(tmp_path: Path, tiny: dict, wan_dir: Path, input_root: Path, pose: P
         wan_dir=str(wan_dir), pose_path=str(pose), steps=2, dtype="float32", input_root=str(input_root),
         scratch=str(tmp_path / "scratch"), output=str(tmp_path / "working"), **kw,
     )
+
+
+def _first_frame(path: Path) -> np.ndarray:
+    info = _probe(path)
+    raw = subprocess.run(["ffmpeg", "-v", "error", "-i", str(path), "-frames:v", "1", "-f", "rawvideo",
+                          "-pix_fmt", "rgb24", "-"], check=True, capture_output=True).stdout
+    return np.frombuffer(raw, np.uint8).reshape(int(info["height"]), int(info["width"]), 3).astype(np.float32)
 
 
 def _mean_luma(path: Path) -> float:
@@ -377,8 +391,10 @@ def test_main_end_to_end_on_cpu(tmp_path, tiny_models, tiny_vitpose, wan_dir, pa
     assert any("relight" in a for a in saved["avisos"])  # LoRA opcional inválida vira aviso
     assert saved["geracao"]["segment_frames"] == 17 and saved["geracao"]["segments"] == 1
     job = saved["job"]
+    assert (job["width"], job["height"]) == (832, 464)
     video = _probe(out / "resultado.mp4")
-    assert (video["width"], video["height"]) == (job["width"], job["height"]) == (832, 464)
+    assert (video["width"], video["height"]) == (1920, 1080)  # deitado: tamanho dos Reels na horizontal
+    assert saved["saida"] == {"largura": 1920, "altura": 1080}
     assert video["avg_frame_rate"] == job["fps"] == "16/1"
     assert int(video["nb_read_frames"]) == job["num_frames"] == 16
     for name in ("pose.mp4", "rosto.mp4", "mascara.mp4"):
@@ -393,15 +409,32 @@ def test_main_end_to_end_on_cpu(tmp_path, tiny_models, tiny_vitpose, wan_dir, pa
     summary = json.loads(next(l for l in stdout if l.startswith("AIVS_RELATORIO ")).removeprefix("AIVS_RELATORIO "))
     assert summary["ok"] is True and summary["run_id"] == "r123" and "traceback" not in summary
 
+    # Composição: fora da máscara, o vídeo é o original (canto superior esquerdo, longe da pessoa).
+    with zipfile.ZipFile(package) as zf:
+        (tmp_path / "pacote.mp4").write_bytes(zf.read("video.mp4"))
+    original = _first_frame(tmp_path / "pacote.mp4")
+    composed = _first_frame(out / "depuracao" / "wan_sem_refino.mp4")
+    raw = _first_frame(out / "depuracao" / "wan_bruto.mp4")
+    corner = (slice(0, 48), slice(0, 96))
+    assert np.abs(composed[corner] - original[corner]).mean() < 6
+    assert np.abs(raw[corner] - original[corner]).mean() > np.abs(composed[corner] - original[corner]).mean()
+    assert "composicao_s" in saved["etapas"]
+
     # Refino do rosto (FaceFusion falso): o resultado é o vídeo refinado; o do Wan fica na depuração.
     assert saved["rosto"]["ok"] is True and saved["rosto"]["fotos"] == 1
     assert "refino_rosto_s" in saved["etapas"]
-    ff_args = json.loads((fake_facefusion / "args.json").read_text())
+    ff_args = json.loads((fake_facefusion / "args_rosto.json").read_text())
     assert ff_args[ff_args.index("-s") + 1].endswith("reference.png")
     assert ff_args[ff_args.index("--face-selector-mode") + 1] == "one"
     plain = out / "depuracao" / "wan_sem_refino.mp4"
     assert abs(_mean_luma(out / "resultado.mp4") - (255 - _mean_luma(plain))) < 8  # cores invertidas
     assert any("Refinando o rosto: 100%" in l for l in lines)
+
+    # Nitidez: Real-ESRGAN 2x depois do rosto, sobre o vídeo já refinado.
+    assert saved["nitidez"] == {"ok": True, "modelo": "real_esrgan_x2", "fator": 2, "provedor": "cpu", "gpu": None}
+    sharp_args = json.loads((fake_facefusion / "args_nitidez.json").read_text())
+    assert sharp_args[sharp_args.index("-t") + 1].endswith("rosto.mp4")
+    assert sharp_args[sharp_args.index("--output-video-scale") + 1] == "2"
 
 
 def test_main_reports_errors(tmp_path, tiny_models, tiny_vitpose, wan_dir, capsys):
@@ -455,7 +488,7 @@ def test_face_sources_prefers_face_photos(tmp_path):
 def test_facefusion_command_uses_every_photo(tmp_path):
     cfg = aivs_wan.Config()
     photos = [tmp_path / "a.png", tmp_path / "b.png"]
-    cmd = aivs_wan.facefusion_command(cfg, photos, tmp_path / "in.mp4", tmp_path / "out.mp4", tmp_path, "cuda", 1)
+    cmd = aivs_wan.facefusion_command(cfg, "rosto", photos, tmp_path / "in.mp4", tmp_path / "out.mp4", tmp_path, "cuda", 1)
     assert cmd[cmd.index("-s") + 1:cmd.index("-t")] == [str(p) for p in photos]
     assert cmd[cmd.index("--processors") + 1:cmd.index("--processors") + 3] == ["face_swapper", "face_enhancer"]
     assert cmd[cmd.index("--execution-providers") + 1] == "cuda" and cmd[cmd.index("--execution-device-ids") + 1] == "1"
@@ -470,7 +503,7 @@ def test_refine_face_falls_back_when_photo_has_no_face(tmp_path, fake_facefusion
     ok = aivs_wan.refine_face(cfg, [tmp_path / "r.png"], _clip(tmp_path / "wan.mp4"), out, tmp_path, report)
     assert ok is False and not out.exists()
     assert report.data["rosto"]["ok"] is False and "rosto humano" in report.data["avisos"][0]
-    assert "no source face" in (tmp_path / "working" / "depuracao" / "facefusion.log").read_text()
+    assert "no source face" in (tmp_path / "working" / "depuracao" / "facefusion_rosto.log").read_text()
 
 
 def test_refine_face_skips_old_ffmpeg(tmp_path, monkeypatch, fake_facefusion):
@@ -479,9 +512,60 @@ def test_refine_face_skips_old_ffmpeg(tmp_path, monkeypatch, fake_facefusion):
     report = aivs_wan.Report(tmp_path / "working" / "relatorio.json")
     ok = aivs_wan.refine_face(cfg, [tmp_path / "r.png"], tmp_path / "wan.mp4", tmp_path / "out.mp4", tmp_path, report)
     assert ok is False and "ffmpeg 4.4" in report.data["avisos"][0]
-    assert not (fake_facefusion / "args.json").exists()  # nem chega a rodar
+    assert not (fake_facefusion / "args_rosto.json").exists()  # nem chega a rodar
 
 
 def test_ffmpeg_version_reads_this_machine():
     version = aivs_wan.ffmpeg_version()
     assert version is None or (isinstance(version, tuple) and version >= (4, 0))
+
+
+def test_facefusion_command_for_upscale(tmp_path):
+    cfg = aivs_wan.Config()
+    cmd = aivs_wan.facefusion_command(cfg, "nitidez", [], tmp_path / "in.mp4", tmp_path / "out.mp4", tmp_path, "cpu", 0)
+    assert "-s" not in cmd
+    assert cmd[cmd.index("--processors") + 1] == "frame_enhancer"
+    assert cmd[cmd.index("--frame-enhancer-model") + 1] == "real_esrgan_x2"
+    assert cmd[cmd.index("--output-video-scale") + 1] == "2"
+    # Cada etapa com a sua pasta temporária: o FaceFusion apaga a dele ao começar.
+    assert cmd[cmd.index("--temp-path") + 1].endswith("ff-temp-nitidez")
+
+
+def test_upscale_failure_keeps_previous_video(tmp_path, monkeypatch, fake_facefusion):
+    monkeypatch.setattr(aivs_wan, "ffmpeg_version", lambda: (4, 4))
+    cfg = aivs_wan.Config(facefusion_dir=str(fake_facefusion), output=str(tmp_path / "working"))
+    report = aivs_wan.Report(tmp_path / "working" / "relatorio.json")
+    ok = aivs_wan.upscale_video(cfg, tmp_path / "in.mp4", tmp_path / "out.mp4", tmp_path, report)
+    assert ok is False and report.data["nitidez"]["ok"] is False
+    assert "Aumento de resolução não aplicado" in report.data["avisos"][0]
+
+
+def test_composite_background_keeps_original_outside_mask():
+    original = np.full((64, 96, 3), 200, np.uint8)
+    generated = np.zeros((64, 96, 3), np.float32)  # o Wan devolve 0..1
+    mask = np.zeros((64, 96), bool)
+    mask[16:48, 32:64] = True
+    out = aivs_wan.composite_background([generated], [original], [mask], feather=3)[0]
+    assert out.dtype == np.uint8
+    assert (out[:6] == 200).all() and (out[:, :12] == 200).all()  # longe da máscara: original intacto
+    assert (out[28:36, 44:52] == 0).all()  # miolo da máscara: personagem gerado
+    edge = out[32, 30:34, 0]
+    assert 0 < edge.min() < 200 and 0 < edge.max() <= 200  # borda suave, sem degrau
+
+
+@pytest.mark.parametrize("size,target,expected", [
+    ((464, 832), "1080p", (1080, 1920)),
+    ((832, 464), "1080p", (1920, 1080)),
+    ((512, 512), "1080p", (1080, 1080)),
+    ((464, 832), "720p", (720, 1280)),
+    ((464, 832), None, None),
+])
+def test_output_size_for_reels(size, target, expected):
+    assert aivs_wan.output_size(*size, target) == expected
+
+
+def test_resize_video_covers_and_crops(tmp_path):
+    out = tmp_path / "out.mp4"
+    aivs_wan.resize_video(_clip(tmp_path / "in.mp4"), out, (108, 192))
+    info = _probe(out)
+    assert (info["width"], info["height"]) == (108, 192)

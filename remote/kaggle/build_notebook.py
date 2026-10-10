@@ -33,8 +33,10 @@ Este notebook é gerado pelo AI Video Studio. Ele:
 1. lê o `wan_package.zip` anexado como dataset;
 2. extrai a pose e o rosto da pessoa;
 3. gera o personagem da imagem de referência no lugar dela, com o Wan 2.2 Animate;
-4. troca o rosto gerado pelo rosto das fotos enviadas (FaceFusion), quadro a quadro;
-5. grava `resultado.mp4` e `relatorio.json` na aba **Output**.
+4. cola o personagem sobre o vídeo original (o fundo fica intacto);
+5. troca o rosto gerado pelo rosto das fotos enviadas (FaceFusion), quadro a quadro;
+6. dobra a resolução (Real-ESRGAN) e entrega no tamanho dos Reels (1080x1920);
+7. grava `resultado.mp4` e `relatorio.json` na aba **Output**.
 
 **Antes de rodar:**
 
@@ -90,11 +92,14 @@ cfg = Config()
 # cfg.dtype = "float32"  # use se o relatório acusar NaN (bem mais lento)
 # cfg.face_refine = False                      # desliga o refino do rosto (FaceFusion)
 # cfg.face_swapper_model = "inswapper_128"     # outro trocador de rosto do FaceFusion
+# cfg.composite_background = False             # usa o fundo redesenhado pelo Wan
+# cfg.upscale = False                          # sem o aumento de resolução (Real-ESRGAN)
+# cfg.output_resolution = None                 # mantém o tamanho da geração (ex.: 464x832)
 cfg"""
 
 RUN = """import json
 relatorio = main(cfg)
-print(json.dumps({k: relatorio.get(k) for k in ("ok", "etapas", "geracao", "vram_pico_gb", "rosto", "avisos")}, indent=2, ensure_ascii=False))"""
+print(json.dumps({k: relatorio.get(k) for k in ("ok", "etapas", "geracao", "vram_pico_gb", "rosto", "nitidez", "saida", "avisos")}, indent=2, ensure_ascii=False))"""
 
 
 def _cell(kind: str, source: str) -> dict:
