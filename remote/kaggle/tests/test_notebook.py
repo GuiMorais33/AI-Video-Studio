@@ -34,6 +34,15 @@ def test_notebook_embeds_module_and_pins_versions():
     assert any("main(cfg)" in s for s in sources)
 
 
+def test_notebook_code_has_no_face_swap_tool():
+    """O Kaggle bloqueia o FaceFusion e ferramentas parecidas (encerra a sessão e pode banir a conta).
+    Nenhuma célula de código pode citá-las; o texto em markdown pode explicar o porquê."""
+    nb = json.loads((HERE / "wan_animate_kaggle.ipynb").read_text())
+    code = "\n".join("".join(c["source"]) for c in nb["cells"] if c["cell_type"] == "code").lower()
+    for name in ("facefusion", "inswapper", "hyperswap", "insightface"):
+        assert name not in code, f"'{name}' numa célula de código do notebook do Kaggle"
+
+
 def test_notebook_cells_run_in_a_kernel(tmp_path):
     """Executa diagnóstico, %%writefile e configuração num kernel real (sem instalar nada nem gerar)."""
     nbclient = pytest.importorskip("nbclient")
