@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import stat
+import threading
 import time
 import zipfile
 from pathlib import Path
@@ -18,10 +19,19 @@ from studio import kaggle_remote
 OK = SimpleNamespace(status="ok", error="")
 
 
+KERNEL_URL = "https://www.kaggle.com/code/maria/ai-video-studio-wan-animate"
+
+
 class FakeApi:
     def __init__(self, final_status="COMPLETE", produce_result=True, dataset_exists=False,
-                 statuses=None, stale=False, dataset_error="", output_blocked=False):
+                 statuses=None, stale=False, dataset_error="", output_blocked=False, previous="COMPLETE",
+                 failure_message="", notebook_error=True, push_url=KERNEL_URL):
         self.final_status = final_status
+        self.cancelled = final_status.startswith("CANCEL")
+        self.previous = previous  # status antes do envio (None: o notebook ainda não existe)
+        self.failure_message = failure_message  # motivo que o Kaggle informa no fim
+        self.notebook_error = notebook_error  # o notebook registrou o erro (AIVS_ERRO e relatório)
+        self.push_url = push_url
         self.produce_result = produce_result
         self.dataset_exists = dataset_exists
         self.statuses = statuses  # sequência de status a devolver (padrão: 2x RUNNING e o final)
@@ -72,21 +82,27 @@ class FakeApi:
         self.pushed_metadata = json.loads(Path(folder, "kernel-metadata.json").read_text())
         assert Path(folder, self.pushed_metadata["code_file"]).exists()
         self.calls.append(("push", timeout))
-        return SimpleNamespace(error=None, invalidDatasetSources=[], versionNumber=7, url="u")
+        return SimpleNamespace(error=None, invalidDatasetSources=[], version_number=7, url=self.push_url)
 
     def kernels_status(self, kernel_id):
+        if not self.pushed_metadata:  # consulta antes do envio: estado da execução anterior
+            self.calls.append(("status_before_push",))
+            if self.previous is None:
+                raise RuntimeError("404 Client Error: Not Found")
+            return SimpleNamespace(status=SimpleNamespace(name=self.previous), failure_message="")
         self.status_calls += 1
         sequence = self.statuses or ["RUNNING", "RUNNING", self.final_status]
         status = sequence[min(self.status_calls, len(sequence)) - 1]
-        return SimpleNamespace(status=SimpleNamespace(name=status), failure_message=None)
+        reason = self.failure_message if status in kaggle_remote.TERMINAL else ""
+        return SimpleNamespace(status=SimpleNamespace(name=status), failure_message=reason)
 
     def kernels_logs(self, kernel_id):
         entries = [
             {"data": f"AIVS_RUN {self.run_id}\n"},
             {"data": f"AIVS_PROGRESS 0.{self.status_calls}0 Gerando segmento {self.status_calls}\n"},
         ]
-        if self.status_calls >= 3:  # fim da execução: o notebook imprime erro e relatório
-            if self.final_status != "COMPLETE":
+        if self.status_calls >= 3 and not self.cancelled:  # fim da execução: o notebook imprime erro e relatório
+            if self.final_status != "COMPLETE" and self.notebook_error:
                 entries.append({"stream_name": "stdout", "data": "AIVS_ERRO ImportError: cannot import name 'FqnToConfig'\n"})
             summary = {"ok": self.final_status == "COMPLETE", "run_id": self.run_id, "etapas": {"pacote_s": 1.5}}
             entries.append({"stream_name": "stdout", "data": f"AIVS_RELATORIO {json.dumps(summary)}\n"})
@@ -96,8 +112,10 @@ class FakeApi:
         if self.output_blocked:
             raise ConnectionError("Tunnel connection failed: 403 Forbidden")
         out = Path(path)
+        if self.cancelled and not self.stale:  # cancelada no meio: sem relatório nem resultado
+            return [], ""
         report = {"etapas": {"geracao_s": 123}, "run_id": "outro" if self.stale else self.run_id}
-        if self.final_status != "COMPLETE":
+        if self.final_status != "COMPLETE" and self.notebook_error:
             report["erro"] = "CUDA out of memory"
         (out / "relatorio.json").write_text(json.dumps(report))
         if self.produce_result:
@@ -159,6 +177,102 @@ def test_run_on_kaggle_reuses_dataset_and_reports_errors(monkeypatch, project_ro
     assert ("create_version",) in api.calls
 
 
+def _run_error(monkeypatch, project_root, api) -> str:
+    root, notebook = project_root
+    _patch(monkeypatch, api)
+    with pytest.raises(kaggle_remote.KaggleError) as info:
+        kaggle_remote.run_on_kaggle({"id": "abc123"}, root, lambda *a: None, lambda p: "", notebook=notebook)
+    message = str(info.value)
+    assert "  " not in message and ".." not in message and " ." not in message, message
+    return message
+
+
+def test_cancel_explains_stage_and_reason(monkeypatch, project_root):
+    url = KERNEL_URL + "?scriptVersionId=123"
+    api = FakeApi(final_status="CANCEL_ACKNOWLEDGED", produce_result=False, push_url=url,
+                  failure_message="Session was stopped by an administrator.")
+    message = _run_error(monkeypatch, project_root, api)
+    assert message.startswith("O Kaggle cancelou a execução (versão 7) depois de menos de 1 min, "
+                              "na etapa: Gerando segmento 3. ")
+    assert "Motivo informado pelo Kaggle: Session was stopped by an administrator. " in message
+    assert "Não foi um erro do notebook" in message and "FaceFusion" in message
+    assert message.endswith(f"Veja {url}")
+    assert not (project_root[0] / "exports" / "kaggle_relatorio.json").exists()
+
+
+def test_cancel_without_reason_uses_live_stage(monkeypatch, project_root):
+    """Sem motivo do Kaggle e sem log no fim: a etapa vem do log ao vivo desta execução."""
+    streamed = threading.Event()
+
+    class Api(FakeApi):
+        def kernels_logs_stream(self, kernel):
+            yield {"data": "AIVS_RUN velho\nAIVS_PROGRESS 1.0 Pronto: resultado.mp4\n"}
+            yield {"data": f"AIVS_RUN {self.run_id}\n"}
+            yield {"data": "AIVS_PROGRESS 0.450 Gerando o personagem (máscara)...\n"}
+            streamed.set()
+
+        def kernels_status(self, kernel_id):
+            if self.status_calls == 2:  # só cancela depois de o log ao vivo chegar
+                assert streamed.wait(5)
+            return super().kernels_status(kernel_id)
+
+        def kernels_logs(self, kernel_id):
+            return ""
+
+    api = Api(final_status="CANCEL_ACKNOWLEDGED", produce_result=False, push_url="")
+    message = _run_error(monkeypatch, project_root, api)
+    assert ", na etapa: Gerando o personagem (máscara). Não foi um erro do notebook:" in message
+    assert "Motivo" not in message
+    assert message.endswith(f"Veja {KERNEL_URL}")
+
+
+def test_cancel_before_any_progress(monkeypatch, project_root):
+    api = FakeApi(final_status="CANCEL_REQUESTED", produce_result=False, stale=True)
+    api.kernels_logs = lambda kernel_id: ""
+    message = _run_error(monkeypatch, project_root, api)
+    # A saída antiga que o Kaggle devolve não esconde o cancelamento nem vira relatório desta execução.
+    assert message.startswith("O Kaggle cancelou a execução (versão 7) depois de menos de 1 min. Não foi")
+    assert not (project_root[0] / "exports" / "kaggle_relatorio.json").exists()
+
+
+def test_error_falls_back_to_kaggle_failure_message(monkeypatch, project_root):
+    api = FakeApi(final_status="ERROR", produce_result=False, notebook_error=False,
+                  failure_message="Your notebook tried to allocate more memory than is available.")
+    message = _run_error(monkeypatch, project_root, api)
+    assert message == ("O notebook deu erro no Kaggle (versão 7): Your notebook tried to allocate more memory "
+                       f"than is available. Veja o log em {KERNEL_URL}")
+
+
+def test_error_without_any_detail(monkeypatch, project_root):
+    api = FakeApi(final_status="ERROR", produce_result=False, notebook_error=False)
+    message = _run_error(monkeypatch, project_root, api)
+    assert message == f"O notebook deu erro no Kaggle (versão 7). Veja o log em {KERNEL_URL}"
+
+
+@pytest.mark.parametrize("previous", ["RUNNING", "QUEUED"])
+def test_refuses_when_notebook_already_running(monkeypatch, project_root, previous):
+    """Outro computador com o mesmo token já mandou o notebook rodar."""
+    root, notebook = project_root
+    api = FakeApi(previous=previous)
+    _patch(monkeypatch, api)
+    with pytest.raises(kaggle_remote.KaggleError, match="Já há uma execução deste notebook") as info:
+        kaggle_remote.run_on_kaggle({"id": "abc123"}, root, lambda *a: None, lambda p: "", notebook=notebook)
+    assert f"pare em {KERNEL_URL} e tente de novo." in str(info.value)
+    assert api.calls == [("status_before_push",)]
+    assert api.uploaded == []
+
+
+@pytest.mark.parametrize("previous", [None, "NEW_SCRIPT", "CANCEL_ACKNOWLEDGED"])
+def test_new_or_idle_notebook_is_sent(monkeypatch, project_root, previous):
+    """None: o notebook ainda não existe e a consulta dá erro 404."""
+    root, notebook = project_root
+    api = FakeApi(previous=previous)
+    _patch(monkeypatch, api)
+    kaggle_remote.run_on_kaggle({"id": "abc123"}, root, lambda *a: None, lambda p: "ok", notebook=notebook)
+    assert api.calls[0] == ("status_before_push",)
+    assert any(c[0] == "push" for c in api.calls)
+
+
 def test_requires_package(monkeypatch, tmp_path):
     _patch(monkeypatch, FakeApi())
     (tmp_path / "exports").mkdir()
@@ -202,6 +316,17 @@ def test_calls_match_installed_kaggle_api():
     for name, params in expected.items():
         signature = inspect.signature(getattr(api, name))
         assert set(params) <= set(signature.parameters), (name, signature)
+
+    # Campos lidos das respostas (kernels_status e kernels_push) e nomes de status usados.
+    service = pytest.importorskip("kagglesdk.kernels.types.kernels_api_service")
+    enums = pytest.importorskip("kagglesdk.kernels.types.kernels_enums")
+    status = service.ApiGetKernelSessionStatusResponse()
+    assert isinstance(status.status, enums.KernelWorkerStatus) and status.failure_message == ""
+    pushed = service.ApiSaveKernelResponse()
+    assert pushed.error == "" and pushed.url == "" and pushed.version_number == 0
+    assert pushed.invalidDatasetSources == []
+    names = {s.name for s in enums.KernelWorkerStatus}
+    assert set(kaggle_remote.ACTIVE + kaggle_remote.TERMINAL + kaggle_remote.BUSY) <= names
 
 
 def test_waits_for_new_run_before_accepting_complete(monkeypatch, project_root):

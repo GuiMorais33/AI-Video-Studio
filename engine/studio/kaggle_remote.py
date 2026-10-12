@@ -1,6 +1,7 @@
 """Execução do Wan Animate no Kaggle pela API oficial (sem interface, sem túnel).
 
 Fluxo de uma geração:
+0. Se o notebook já está na fila ou rodando (ex.: enviado de outro computador), não envia nada.
 1. O pacote (wan_package.zip) vira um dataset PRIVADO "<usuário>/aivs-<projeto>".
 2. O notebook remote/kaggle/wan_animate_kaggle.ipynb é enviado como kernel privado com
    GPU T4 x2 e internet, tendo o dataset como entrada, e executado em lote.
@@ -250,6 +251,54 @@ def _status_name(response: Any) -> str:
 
 ACTIVE = ("QUEUED", "RUNNING", "NEW_SCRIPT")
 TERMINAL = ("COMPLETE", "ERROR", "CANCEL_REQUESTED", "CANCEL_ACKNOWLEDGED")
+CANCELLED = ("CANCEL_REQUESTED", "CANCEL_ACKNOWLEDGED")
+# Antes do envio, só fila e execução contam como ocupado. NEW_SCRIPT fica de fora: também marca
+# uma versão salva que não foi executada, e esse estado não termina sozinho.
+BUSY = ("QUEUED", "RUNNING")
+
+
+def _busy(api, kernel_id: str) -> bool:
+    """Diz se o notebook já tem uma execução na fila ou rodando. Um notebook que ainda não
+    existe dá erro na consulta e conta como livre."""
+    try:
+        return _status_name(api.kernels_status(kernel_id)) in BUSY
+    except Exception:
+        return False
+
+
+def _one_line(text: Any) -> str:
+    """Texto numa linha só e sem ponto final, para encaixar numa frase."""
+    return " ".join(str(text or "").split()).rstrip(". ")
+
+
+def _run_url(pushed: Any, kernel_id: str) -> str:
+    """Link devolvido pelo kernels_push; sem ele (ou fora do kaggle.com), o do notebook."""
+    url = str(getattr(pushed, "url", "") or "")
+    if url.startswith("/"):
+        url = "https://www.kaggle.com" + url
+    return url if url.startswith("https://www.kaggle.com/") else f"https://www.kaggle.com/code/{kernel_id}"
+
+
+def _unfinished(status: str, *, url: str, version: int, minutes: int, stage: str, reason: str,
+                detail: str) -> KaggleError:
+    """Explica por que a execução não terminou; só entram as partes que vieram preenchidas."""
+    run = f" (versão {version})" if version else ""
+    stage, reason, detail = _one_line(stage), _one_line(reason), _one_line(detail)
+    if status in CANCELLED:
+        when = f"{minutes} min" if minutes else "menos de 1 min"
+        parts = [
+            f"O Kaggle cancelou a execução{run} depois de {when}" + (f", na etapa: {stage}." if stage else "."),
+            f"Motivo informado pelo Kaggle: {reason}." if reason else "",
+            "Não foi um erro do notebook: uma execução é cancelada quando alguém clica em Cancel/Stop session "
+            "no kaggle.com ou quando o próprio Kaggle a interrompe (limite de tempo ou ferramenta bloqueada, "
+            "como o FaceFusion).",
+            f"Veja {url}",
+        ]
+    else:
+        detail = detail or reason
+        what = "deu erro" if status == "ERROR" else f"terminou com status {status.lower()}"
+        parts = [f"O notebook {what} no Kaggle{run}" + (f": {detail}." if detail else "."), f"Veja o log em {url}"]
+    return KaggleError(" ".join(p for p in parts if p))
 
 
 def _check(result: Any, what: str) -> Any:
@@ -301,6 +350,12 @@ def run_on_kaggle(
     dataset_slug = f"aivs-{project['id']}"
     dataset_id = f"{user}/{dataset_slug}"
     kernel_id = f"{user}/{KERNEL_SLUG}"
+    # Dois estúdios (ex.: casa e loja) usam o mesmo notebook: um envio novo atropelaria o outro.
+    if _busy(api, kernel_id):
+        raise KaggleError(
+            "Já há uma execução deste notebook rodando no Kaggle (talvez iniciada em outro computador). "
+            f"Espere terminar ou pare em https://www.kaggle.com/code/{kernel_id} e tente de novo."
+        )
 
     with tempfile.TemporaryDirectory(prefix="aivs-kaggle-") as tmp_name:
         tmp = Path(tmp_name)
@@ -347,16 +402,20 @@ def run_on_kaggle(
         pushed = _check(api.kernels_push(str(kernel_dir), timeout=str(MAX_WAIT_SECONDS)), "Envio do notebook")
         if getattr(pushed, "invalidDatasetSources", None):
             raise KaggleError(f"O Kaggle não anexou o pacote ao notebook: {pushed.invalidDatasetSources}")
+        version = getattr(pushed, "version_number", 0)
+        version = version if isinstance(version, int) and version > 0 else 0
 
         started = time.monotonic()
         last_fraction = 0.05
         seen_active, polls = False, 0
+        stage = ""  # última etapa desta execução: explica um cancelamento
         follower = _LogFollower(api, kernel_id, run_id)
         try:
             while True:
                 time.sleep(POLL_SECONDS)
                 polls += 1
-                status = _status_name(api.kernels_status(kernel_id))
+                response = api.kernels_status(kernel_id)
+                status = _status_name(response)
                 seen_active = seen_active or status in ACTIVE
                 if seen_active:
                     follower.start()
@@ -369,6 +428,7 @@ def run_on_kaggle(
                 message = None
                 if latest is not None:
                     value, message = latest
+                    stage = message or stage
                     last_fraction = max(last_fraction, 0.05 + 0.85 * min(1.0, value))
                 minutes = int((time.monotonic() - started) / 60)
                 progress(last_fraction, f"Kaggle: {status.lower()} ({minutes} min){' · ' + message if message else ''}")
@@ -395,10 +455,13 @@ def run_on_kaggle(
         report = next(out_dir.rglob("relatorio.json"), None)
         report_data = json.loads(report.read_text()) if report is not None else _report_from_log(log)
         if report_data and report_data.get("run_id") != run_id:
-            raise KaggleError(
-                "O Kaggle devolveu a saída de outra execução (relatório de outro envio). "
-                f"Tente de novo ou confira https://www.kaggle.com/code/{kernel_id}"
-            )
+            if status == "COMPLETE":
+                raise KaggleError(
+                    "O Kaggle devolveu a saída de outra execução (relatório de outro envio). "
+                    f"Tente de novo ou confira https://www.kaggle.com/code/{kernel_id}"
+                )
+            # Sem saída própria (ex.: cancelada), o Kaggle pode devolver a de antes: não esconde o motivo.
+            report, report_data = None, {}
         # Guardado também em caso de erro: traz tempos, avisos e o erro desta execução.
         if report is not None:
             shutil.copyfile(report, root / "exports" / "kaggle_relatorio.json")
@@ -406,10 +469,15 @@ def run_on_kaggle(
             (root / "exports" / "kaggle_relatorio.json").write_text(json.dumps(report_data, indent=2, ensure_ascii=False))
         if status != "COMPLETE":
             errors = ERROR_RE.findall(log)
-            detail = report_data.get("erro") or (errors[-1] if errors else "")
-            raise KaggleError(
-                f"O notebook terminou com status {status.lower()}. {detail} "
-                f"Veja o log em https://www.kaggle.com/code/{kernel_id}"
+            final = _progress_for_run(log, run_id)
+            raise _unfinished(
+                status,
+                url=_run_url(pushed, kernel_id),
+                version=version,
+                minutes=int((time.monotonic() - started) / 60),
+                stage=(final[1] if final else "") or stage,
+                reason=getattr(response, "failure_message", None) or "",
+                detail=report_data.get("erro") or (errors[-1] if errors else ""),
             )
         result = next(out_dir.rglob(RESULT_NAME), None)
         if result is None and download_error is not None:
