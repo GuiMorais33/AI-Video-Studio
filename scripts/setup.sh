@@ -7,8 +7,9 @@
 #   SAM2_MODEL=small bash scripts/setup.sh
 #
 # Tudo fica dentro da pasta do projeto: engine/.venv (Python), engine/.vendor/sam2
-# (código oficial da Meta), .vendor/node (Node.js, se o do sistema for antigo) e
-# data/models (checkpoints). Nada é pago nem enviado.
+# (código oficial da Meta), engine/.vendor/facefusion (refino do rosto, com Python próprio),
+# .vendor/node (Node.js, se o do sistema for antigo) e data/models (checkpoints). Nada é pago
+# nem enviado.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -20,11 +21,21 @@ VENV="$ROOT/engine/.venv"
 SAM2_DIR="$ROOT/engine/.vendor/sam2"
 # Commit fixo do repositório oficial facebookresearch/sam2 (SAM 2.1, dez/2024).
 SAM2_COMMIT="2b90b9f5ceec907a1c18123530e92e794ad901a4"
+# FaceFusion 3.9.1 (commit da tag): troca o rosto do vídeo do Wan pelo das fotos, aqui na CPU.
+# O Kaggle bloqueia o FaceFusion, então ele nunca roda lá.
+FACEFUSION_DIR="$ROOT/engine/.vendor/facefusion"
+FACEFUSION_COMMIT="72470819a0373be3388b3929c8f8f311f418fc3c"
+# Só o modo sem interface (headless-run): as versões do requirements.txt do 3.9.1, sem o gradio.
+FACEFUSION_PACKAGES=(numpy==2.4.6 onnx==1.23.1 onnxruntime==1.30.0 opencv-python-headless==5.0.0.93
+  tqdm==4.70.1 scipy==1.18.1)
+# Python do FaceFusion (~0,5 GB) agora e os modelos (~1,7 GB) no primeiro refino do rosto.
+FACEFUSION_MIN_FREE_GB=3
 TORCH="${TORCH:-auto}"
 SAM2_MODEL="${SAM2_MODEL:-tiny}"
-# Mínimo para instalar do zero pelo caminho só-CPU: ambiente Python, painel, checkpoint e
-# alguns projetos. Para atualizar uma instalação que já existe, 1 GB basta.
-MIN_FREE_GB=5
+# Mínimo para instalar do zero pelo caminho só-CPU: ambiente Python, refino do rosto (com os
+# modelos), painel, checkpoint e alguns projetos. Para atualizar uma instalação que já existe,
+# 1 GB basta (sem espaço, o FaceFusion fica de fora com um aviso).
+MIN_FREE_GB=7
 
 # Temporários no disco do projeto: o /tmp do Ubuntu pode ficar na memória (poucos GB), e o pip
 # baixa todos os pacotes para lá antes de instalar (2,8 GB no PyTorch com GPU).
@@ -35,6 +46,34 @@ trap 'rm -rf "$TMPDIR"' EXIT
 
 step() { printf '\n==> %s\n' "$*"; }
 fail() { printf '\nERRO: %s\n' "$*" >&2; exit 1; }
+
+# FaceFusion com Python próprio: as versões dele (numpy, onnxruntime) não brigam com as do motor.
+# Não usa "set -e" aqui dentro (é chamado num if): cada passo devolve o erro explicitamente.
+install_facefusion() {
+  local dir="$FACEFUSION_DIR" py="$FACEFUSION_DIR/.venv/bin/python"
+  mkdir -p "$dir" || return 1
+  [[ -d "$dir/.git" ]] || git init --quiet "$dir" || return 1
+  if [[ "$(git -C "$dir" rev-parse HEAD 2>/dev/null)" != "$FACEFUSION_COMMIT" ]]; then
+    git -C "$dir" fetch --quiet --depth 1 https://github.com/facefusion/facefusion.git "$FACEFUSION_COMMIT" \
+      || return 1
+    # Os modelos baixados (.assets, fora do git) continuam lá.
+    git -C "$dir" checkout --quiet --force FETCH_HEAD || return 1
+  fi
+  [[ -x "$py" ]] || python3 -m venv "$dir/.venv" || return 1
+  "$py" -m pip install --quiet --upgrade pip || return 1
+  if ! "$py" -m pip install --quiet --no-cache-dir "${FACEFUSION_PACKAGES[@]}"; then
+    # Ex.: o Python 3.10 do Ubuntu 22.04 não instala o numpy 2.4.
+    echo "As versões fixas não instalaram neste Python; tentando as versões compatíveis mais novas."
+    "$py" -m pip install --quiet --no-cache-dir "${FACEFUSION_PACKAGES[@]%%==*}" || return 1
+  fi
+  # Confere que ele abre (importa onnxruntime, OpenCV...).
+  (cd "$dir" && "$py" facefusion.py --version) || return 1
+}
+
+facefusion_warning() {
+  printf '\nAviso: FaceFusion não instalado: %s.\n' "$1"
+  echo "O estúdio funciona, mas o vídeo final sai sem o refino do rosto. Rode o instalador de novo depois."
+}
 
 APT_PACKAGES=(python3 python3-venv python3-pip git ffmpeg curl xz-utils)
 
@@ -108,6 +147,15 @@ SAM2_BUILD_CUDA=0 "$PY" -m pip install --quiet --no-build-isolation -e "$SAM2_DI
 
 step "Instalando o motor do AI Video Studio"
 "$PY" -m pip install --quiet -e "$ROOT/engine[dev,kaggle]"
+
+step "Instalando FaceFusion 3.9.1 (refino do rosto, roda neste computador)"
+if [[ ! -x "$FACEFUSION_DIR/.venv/bin/python" ]] && (( $(disk_free_gb "$ROOT") < FACEFUSION_MIN_FREE_GB )); then
+  facefusion_warning "pouco espaço em disco (o refino do rosto precisa de ~$FACEFUSION_MIN_FREE_GB GB: ~0,5 GB agora e ~1,7 GB de modelos no primeiro uso)"
+elif install_facefusion; then
+  echo "FaceFusion pronto. Os modelos (~1,7 GB) baixam no primeiro refino do rosto."
+else
+  facefusion_warning "a instalação falhou (veja as mensagens acima)"
+fi
 
 step "Baixando checkpoint SAM 2.1 ($SAM2_MODEL)"
 "$VENV/bin/studio" models download --model "$SAM2_MODEL"

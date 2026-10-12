@@ -13,6 +13,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from . import face_refine
 from .config import Settings
 from .models import checkpoint_path
 
@@ -195,6 +196,8 @@ def collect(settings: Settings | None = None) -> dict[str, Any]:
             "sam2_model": settings.sam2_model,
             "sam2_checkpoint": str(ckpt),
             "sam2_checkpoint_present": ckpt.exists(),
+            # Refino do rosto: abre o FaceFusion (--version) para pegar dependências faltando.
+            "facefusion": face_refine.status(settings, deep=True),
         },
         "data_dir": str(settings.data_dir),
     }
@@ -238,6 +241,13 @@ def recommendations(r: dict[str, Any]) -> list[str]:
         tips.append("SAM 2 não instalado: rode scripts/setup.sh.")
     if not ml["sam2_checkpoint_present"]:
         tips.append("Checkpoint do SAM 2.1 ausente: rode `studio models download`.")
+    facefusion = ml.get("facefusion")
+    if facefusion is not None and not facefusion["installed"]:
+        tips.append(f"{face_refine.NOT_INSTALLED[:-1]}. Sem ele, o vídeo final sai com o rosto gerado pelo Wan "
+                    f"({facefusion['reason']}).")
+    elif facefusion is not None and not facefusion["models"]:
+        tips.append("O primeiro refino do rosto baixa ~1,7 GB de modelos (uma vez só)"
+                    + (": libere espaço no disco antes." if r["disk"]["free_gb"] < 3 else "."))
     if r["disk"]["free_gb"] < 5:
         tips.append(f"Só {r['disk']['free_gb']} GB livres: libere espaço para os vídeos e as máscaras dos projetos.")
     return tips
@@ -273,6 +283,8 @@ def format_report(r: dict[str, Any]) -> str:
         ),
         f"SAM 2       instalado: {yn(ml['sam2_installed'])}  modelo: {ml['sam2_model']}  "
         f"checkpoint: {yn(ml['sam2_checkpoint_present'])}",
+        f"FaceFusion  instalado: {yn(ml['facefusion']['installed'])}  {ml['facefusion']['version'] or ''}  "
+        f"modelos baixados: {yn(ml['facefusion']['models'])}  (refino do rosto, na CPU)",
         "",
         "Recomendações:",
     ]

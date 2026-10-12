@@ -41,8 +41,19 @@ export function WanPanel({ project, locked, run }: Props) {
 
   const remoteJob = project.remote_job;
   const lastKaggle = project.jobs.kaggle;
-  // Muda quando o pacote é refeito, um resultado é importado ou o Kaggle devolve um vídeo.
-  const version = `${project.mask_version}-${lastJob?.updated_at ?? ""}-${lastKaggle?.updated_at ?? ""}-${resultVersion}`;
+  const faceJob = project.active_job?.kind === "face_refine" ? project.active_job : null;
+  const lastFaceJob = project.jobs.face_refine;
+  const faceRefine = project.face_refine;
+  const refined = faceRefine.result;
+  // Muda quando o pacote é refeito, um resultado é importado, o Kaggle devolve um vídeo ou o refino
+  // do rosto termina (o wan_final.mp4 e o comparativo.mp4 são refeitos).
+  const version = [
+    project.mask_version,
+    lastJob?.updated_at ?? "",
+    lastKaggle?.updated_at ?? "",
+    refined?.concluido_em ?? "",
+    resultVersion,
+  ].join("-");
   useEffect(() => {
     engine.kaggleStatus().then(setKaggle, () => undefined);
   }, [remoteJob?.id]);
@@ -101,7 +112,8 @@ export function WanPanel({ project, locked, run }: Props) {
       <h2>4. Personagem com Wan Animate (Kaggle)</h2>
       <p className="muted small">
         A troca do personagem roda numa GPU gratuita do Kaggle. Aqui você prepara o pacote, roda o notebook
-        lá e traz o vídeo de volta. <a href={KAGGLE_GUIDE_URL} target="_blank" rel="noreferrer">Passo a passo</a>
+        lá e traz o vídeo de volta; o rosto é refinado depois, aqui neste computador.{" "}
+        <a href={KAGGLE_GUIDE_URL} target="_blank" rel="noreferrer">Passo a passo</a>
       </p>
 
       <div className="wan-grid">
@@ -124,6 +136,10 @@ export function WanPanel({ project, locked, run }: Props) {
           <p className="muted small">
             3 a 6 fotos nítidas do rosto: de frente, meio perfil, sorrindo, com boa luz. O rosto do vídeo final fica
             igual a elas. Sem fotos aqui, o rosto vem da imagem acima.
+          </p>
+          <p className="muted small">
+            As fotos ficam neste computador: o refino do rosto roda aqui depois que o vídeo volta do Kaggle. Mudou as
+            fotos? Basta usar &quot;Refazer o refino do rosto&quot;, sem gerar no Kaggle de novo.
           </p>
           {project.faces.length > 0 && (
             <div className="faces">
@@ -165,8 +181,8 @@ export function WanPanel({ project, locked, run }: Props) {
               placeholder="ex.: a cartoon astronaut in a white suit and orange helmet, dancing" />
           </label>
           <p className="muted small">
-            Descrever roupa e materiais deixa o resultado mais fiel à imagem. No fim, o rosto é trocado pelo das fotos
-            do rosto, mantendo as expressões do vídeo. Gere o pacote de novo depois de mudar as fotos.
+            Descrever roupa e materiais deixa o resultado mais fiel à imagem. Gere o pacote de novo depois de trocar a
+            imagem do personagem.
           </p>
           {activeJob ? (
             <div className="job">
@@ -219,7 +235,8 @@ export function WanPanel({ project, locked, run }: Props) {
             kaggle && (
               <p className="muted small">
                 Kaggle conectado{account ? ` como ${account.username}` : ""}. A geração roda numa GPU T4 grátis
-                (cerca de 35 min para 5 s de vídeo) e o resultado volta sozinho para cá.
+                (cerca de 35 min para 5 s de vídeo) e o resultado volta sozinho para cá. Depois, o rosto é refinado
+                neste computador, na CPU (cerca de 10 a 20 min para 5 s de vídeo).
                 {account?.quota && (
                   <>
                     {" "}
@@ -251,7 +268,7 @@ export function WanPanel({ project, locked, run }: Props) {
             </button>
           )}
           {!remoteJob && project.wan_package_stale && (
-            <p className="status warn">A imagem ou as fotos do rosto mudaram: gere o pacote de novo antes de enviar.</p>
+            <p className="status warn">A imagem do personagem mudou: gere o pacote de novo antes de enviar.</p>
           )}
           {!remoteJob && kaggle?.running && kaggle.running.project_id !== project.id && (
             <p className="status warn">Outro projeto está usando o Kaggle agora (um por vez).</p>
@@ -274,13 +291,67 @@ export function WanPanel({ project, locked, run }: Props) {
             <ul className="downloads">
               <li>
                 <a href={fileUrl(project.id, "wan_final.mp4", version)}>wan_final.mp4</a>{" "}
-                <span className="muted small">personagem + áudio original</span>
+                <span className="muted small">
+                  {refined?.ok ? "rosto refinado, " : ""}tamanho dos Reels + áudio original
+                </span>
               </li>
               <li>
                 <a href={fileUrl(project.id, "comparativo.mp4", version)}>comparativo.mp4</a>{" "}
                 <span className="muted small">antes | depois</span>
               </li>
             </ul>
+          )}
+
+          <h3>Refino do rosto</h3>
+          {faceRefine.installed ? (
+            <p className="muted small">
+              Troca o rosto do vídeo pelo das fotos, aqui na CPU, assim que o vídeo chega (cerca de 10 a 20 min para 5
+              s de vídeo; o primeiro refino também baixa ~1,7 GB de modelos).
+            </p>
+          ) : (
+            <p className="status warn">
+              Refino do rosto não instalado neste computador: rode o instalador de novo (bash scripts/setup.sh). Sem
+              ele, o vídeo final fica com o rosto gerado pelo Wan.
+            </p>
+          )}
+          {faceJob ? (
+            <div className="job">
+              <div className="job-head">
+                <span>{faceJob.message ?? "Refinando o rosto…"}</span>
+                <span>{Math.round(faceJob.progress * 100)}%</span>
+              </div>
+              <div className="bar"><div style={{ width: `${faceJob.progress * 100}%` }} /></div>
+            </div>
+          ) : (
+            <>
+              {lastFaceJob?.status === "error" && <p className="status warn">Falhou: {lastFaceJob.message}</p>}
+              {refined?.ok && (
+                <p className="status ok">
+                  Rosto refinado com {refined.fotos} foto(s) em {formatDuration(refined.segundos)}.
+                  {refined.avisos?.map((aviso) => ` Aviso: ${aviso}.`).join("")}
+                </p>
+              )}
+              {refined && !refined.ok && (
+                <p className="status warn">
+                  Refino do rosto não aplicado: {refined.motivo}. O wan_final.mp4 está sem o refino.
+                  {wan["facefusion_rosto.log"] && (
+                    <>
+                      {" "}
+                      <a href={fileUrl(project.id, "facefusion_rosto.log", version)}>Log do FaceFusion</a>
+                    </>
+                  )}
+                </p>
+              )}
+              {!refined && wan["wan_result.mp4"] && faceRefine.installed && lastFaceJob?.status !== "error" && (
+                <p className="muted small">Este vídeo ainda não passou pelo refino do rosto.</p>
+              )}
+              <button
+                disabled={locked || !faceRefine.installed || !wan["wan_result.mp4"] || Boolean(remoteJob)}
+                onClick={() => run("Iniciando o refino do rosto…", () => engine.faceRefine(project.id))}
+              >
+                {refined || lastFaceJob ? "Refazer o refino do rosto" : "Refinar o rosto"}
+              </button>
+            </>
           )}
         </div>
       </div>
@@ -290,6 +361,10 @@ export function WanPanel({ project, locked, run }: Props) {
       )}
     </section>
   );
+}
+
+function formatDuration(seconds: number): string {
+  return seconds < 90 ? `${Math.round(seconds)} s` : `${Math.round(seconds / 60)} min`;
 }
 
 function formatHours(hours: number): string {

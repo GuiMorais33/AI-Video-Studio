@@ -1,4 +1,4 @@
-"""Execução serial de tarefas longas (rastreamento, exportação) com progresso no SQLite."""
+"""Execução serial de tarefas longas (rastreamento, exportação, refino do rosto) com progresso no SQLite."""
 
 from __future__ import annotations
 
@@ -26,6 +26,8 @@ class JobRunner:
         # Um único trabalhador: o modelo e a CPU não comportam duas tarefas pesadas ao mesmo tempo.
         self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix=name)
         self._submit_lock = threading.Lock()
+        # Ligado ao encerrar o motor: tarefas com processo externo (FaceFusion) o encerram ao ver.
+        self.stopping = threading.Event()
 
     def submit(
         self,
@@ -76,4 +78,5 @@ class JobRunner:
         self._pool.submit(lambda: None).result(timeout=timeout)
 
     def shutdown(self) -> None:
+        self.stopping.set()
         self._pool.shutdown(wait=False, cancel_futures=True)

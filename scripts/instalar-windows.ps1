@@ -7,9 +7,9 @@
 # O que ele faz, pedindo confirmacao so quando o Windows exigir:
 #   1. Instala o WSL2 com Ubuntu, se faltar (pede permissao de administrador e, as vezes, reinicio).
 #   2. Abre o Ubuntu uma vez para voce criar usuario e senha, se ainda nao criou.
-#   3. Confere o espaco livre no disco do Ubuntu (5 GB no minimo; 12 GB para usar placa NVIDIA).
+#   3. Confere o espaco livre no disco do Ubuntu (7 GB no minimo; 12 GB para usar placa NVIDIA).
 #   4. Dentro do Ubuntu: baixa o projeto em ~/AI-Video-Studio e roda scripts/setup.sh
-#      (instala Python, FFmpeg, PyTorch, SAM 2.1, Node.js e o painel; pede a senha do Ubuntu).
+#      (instala Python, FFmpeg, PyTorch, SAM 2.1, FaceFusion, Node.js e o painel; pede a senha do Ubuntu).
 #   5. Cria o atalho "AI Video Studio" na Area de Trabalho para abrir o estudio.
 # Pode rodar de novo quantas vezes quiser: ele continua de onde parou e atualiza o projeto.
 
@@ -115,7 +115,8 @@ if (-not $user -or $user -eq "root") {
 Write-Host "Usuario do ${Distro}: $user"
 
 # --- 3. Espaco em disco ----------------------------------------------------
-# Instalar do zero (so-CPU): ~5 GB. Com a placa NVIDIA, o PyTorch baixa ~3 GB e ocupa ~7 GB.
+# Instalar do zero (so-CPU): ~7 GB, com ~2,2 GB do refino do rosto (FaceFusion e os modelos dele).
+# Com a placa NVIDIA, o PyTorch baixa ~3 GB e ocupa ~7 GB.
 # Atualizar uma instalacao que ja existe precisa de pouco: 1 GB.
 Write-Step "Verificando espaco em disco"
 $setupEnv = ""
@@ -126,7 +127,7 @@ if ($space) {
     $setupEnv = "AIVS_WIN_DRIVE=" + $space.Letter.ToLower() + " "
     & wsl.exe -d $Distro -e bash -lc "test -x ~/AI-Video-Studio/engine/.venv/bin/studio"
     $alreadyInstalled = ($LASTEXITCODE -eq 0)
-    $minGB = 5
+    $minGB = 7
     if ($alreadyInstalled) { $minGB = 1 }
     if ($space.GB -lt $minGB) {
         Stop-Installer ("Pouco espaco no disco $($space.Letter): ($($space.GB) GB livres). O AI Video Studio precisa de pelo menos $minGB GB " +

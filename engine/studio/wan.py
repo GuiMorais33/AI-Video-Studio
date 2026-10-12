@@ -4,6 +4,9 @@ O pacote leva para a GPU remota (Kaggle) tudo que a geração precisa e que já
 temos localmente: o vídeo no tamanho do modelo (múltiplos de 16), a máscara da
 pessoa quadro a quadro (do SAM 2.1, já corrigida), a imagem de referência do
 personagem e os parâmetros. Pose e rosto são extraídos lá, na GPU.
+
+As fotos do rosto não vão no pacote: o refino do rosto (FaceFusion) roda neste
+computador, depois que o vídeo volta do Kaggle (face_refine.py).
 """
 
 from __future__ import annotations
@@ -28,9 +31,10 @@ from .masks import load_mask
 PACKAGE_FORMAT = 1
 # Área em pixels de cada resolução de geração (mesma regra "por área" do pré-processamento oficial).
 RESOLUTIONS = {"480p": 832 * 480, "720p": 1280 * 720}
-WAN_FILES = ("wan_package.zip", "wan_input.mp4", "wan_result.mp4", "wan_final.mp4", "comparativo.mp4")
+WAN_FILES = ("wan_package.zip", "wan_input.mp4", "wan_result.mp4", "wan_final.mp4", "comparativo.mp4",
+             "facefusion_rosto.log")
 MAX_REFERENCE_BYTES = 25 * 1024 * 1024
-# Fotos extras do rosto, usadas pelo refino do rosto (FaceFusion) no Kaggle.
+# Fotos extras do rosto, usadas pelo refino do rosto (FaceFusion) neste computador.
 FACES_DIR = "faces"
 MAX_FACE_PHOTOS = 10
 FACE_NAME_RE = re.compile(r"\d{2}\.png")
@@ -131,8 +135,8 @@ def list_face_photos(root: Path) -> list[str]:
 
 
 def save_face_photo(upload: Path, root: Path) -> str:
-    """Foto extra do rosto (de frente, meio perfil, sorrindo...): o refino do rosto no Kaggle
-    combina todas numa identidade só. Devolve o nome salvo (01.png, 02.png...)."""
+    """Foto extra do rosto (de frente, meio perfil, sorrindo...): o refino do rosto combina todas
+    numa identidade só. Devolve o nome salvo (01.png, 02.png...)."""
     names = list_face_photos(root)
     if len(names) >= MAX_FACE_PHOTOS:
         raise WanError(f"Já há {MAX_FACE_PHOTOS} fotos do rosto; remova alguma antes de enviar outra.")
@@ -143,14 +147,14 @@ def save_face_photo(upload: Path, root: Path) -> str:
 
 
 def package_stale(root: Path) -> bool:
-    """A foto principal ou as do rosto mudaram depois do último pacote: o Kaggle receberia as antigas.
+    """A imagem do personagem mudou depois do último pacote: o Kaggle receberia a antiga.
 
-    A pasta faces/ muda de data quando uma foto entra (os.replace) ou sai (unlink)."""
+    As fotos do rosto não contam: elas só são usadas aqui, no refino do rosto."""
     package = root / "exports" / "wan_package.zip"
-    if not package.exists():
+    reference = root / "reference.png"
+    if not package.exists() or not reference.exists():
         return False
-    built = package.stat().st_mtime
-    return any(p.exists() and p.stat().st_mtime > built for p in (root / "reference.png", root / FACES_DIR))
+    return reference.stat().st_mtime > package.stat().st_mtime
 
 
 def delete_face_photo(root: Path, name: str) -> None:
@@ -191,7 +195,6 @@ def build_package(
     trimmed = len(indices) - kept
     indices = indices[:kept]
     geo = wan_geometry(project["width"], project["height"], RESOLUTIONS[resolution])
-    face_names = list_face_photos(root)
 
     exports.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(dir=root, prefix="wan-") as tmp_name:
@@ -231,17 +234,12 @@ def build_package(
             "prompt": prompt.strip(),
             "empty_mask_frames": empty,
             "trimmed_frames": trimmed,
-            "files": {
-                "video": "video.mp4", "masks": "masks/%05d.png", "reference": "reference.png",
-                "faces": [f"{FACES_DIR}/{name}" for name in face_names],
-            },
+            "files": {"video": "video.mp4", "masks": "masks/%05d.png", "reference": "reference.png"},
         }
         package = tmp / "wan_package.zip"
         with zipfile.ZipFile(package, "w", compression=zipfile.ZIP_DEFLATED) as zf:
             zf.write(tmp / "video.mp4", "video.mp4", compress_type=zipfile.ZIP_STORED)
             zf.write(reference, "reference.png", compress_type=zipfile.ZIP_STORED)
-            for name in face_names:
-                zf.write(root / FACES_DIR / name, f"{FACES_DIR}/{name}", compress_type=zipfile.ZIP_STORED)
             for png in sorted((tmp / "masks").glob("*.png")):
                 zf.write(png, f"masks/{png.name}")
             zf.writestr("job.json", json.dumps(job, indent=2, ensure_ascii=False))
@@ -251,11 +249,32 @@ def build_package(
     return f"Pacote pronto: {len(indices)} quadros {geo.width}x{geo.height} @ {float(dst_fps):.2f} fps{note}."
 
 
+def reels_size(width: int, height: int) -> tuple[int, int]:
+    """Tamanho final no formato dos Reels: 1080x1920 em pé, 1920x1080 deitado, 1080x1080 quadrado."""
+    if height > width:
+        return 1080, 1920
+    if width > height:
+        return 1920, 1080
+    return 1080, 1080
+
+
+# Cores do vídeo final: os players tratam vídeo HD sem marcação como BT.709, mas o vídeo do Wan sai
+# em BT.601 (o padrão do ffmpeg ao converter de RGB). Sem converter, verdes e vermelhos mudam até
+# ~25 níveis no celular. "auto" lê a marcação de quem tem (o vídeo do FaceFusion sai em BT.709).
+BT709_OUTPUT = ["-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709"]
+
+
+def cover_filter(width: int, height: int) -> str:
+    """Escala para cobrir o tamanho e corta o excesso no centro (sem faixas pretas), em BT.709."""
+    return (f"scale={width}:{height}:force_original_aspect_ratio=increase:flags=lanczos:"
+            f"in_color_matrix=auto:out_color_matrix=bt709,crop={width}:{height},setsar=1")
+
+
 def import_result(project: dict[str, Any], root: Path, upload: Path) -> str:
-    """Recebe o vídeo gerado no Kaggle, junta o áudio original e monta o comparativo lado a lado."""
+    """Recebe o vídeo do Wan (do Kaggle ou importado à mão) como exports/wan_result.mp4 e já monta o
+    wan_final.mp4 sem o refino do rosto; o refino (face_refine.py) troca o final depois."""
     exports = root / "exports"
-    wan_input = exports / "wan_input.mp4"
-    if not wan_input.exists():
+    if not (exports / "wan_input.mp4").exists():
         raise WanError("Gere o pacote do Wan antes de importar um resultado.")
     try:
         info = media.probe(upload)
@@ -263,37 +282,53 @@ def import_result(project: dict[str, Any], root: Path, upload: Path) -> str:
         raise WanError(f"O arquivo enviado não é um vídeo válido: {exc}") from exc
     exports.mkdir(parents=True, exist_ok=True)
     os.replace(upload, exports / "wan_result.mp4")
-    result = exports / "wan_result.mp4"
+    # O refino anterior era de outro vídeo.
+    (exports / "face_refine.json").unlink(missing_ok=True)
+    width, height = finish_result(project, root, exports / "wan_result.mp4")
+    return f"Resultado importado: {info.width}x{info.height}, {info.duration:.1f}s (final em {width}x{height})."
+
+
+def finish_result(project: dict[str, Any], root: Path, video: Path) -> tuple[int, int]:
+    """Acabamento de um vídeo do Wan (refinado ou não): wan_final.mp4 no tamanho dos Reels com o
+    áudio original e comparativo.mp4 (vídeo do pacote | final, mesmo enquadramento). Devolve o tamanho."""
+    exports = root / "exports"
+    info = media.probe(video)
+    width, height = reels_size(info.width, info.height)
     clip = root / "clip.mp4"
-    has_audio = bool(project["has_audio"])
+    has_audio = bool(project["has_audio"]) and clip.exists()
 
     ff = media.ffmpeg_bin()
     final_tmp = exports / "wan_final.tmp.mp4"
-    cmd = [ff, "-y", "-v", "error", "-i", str(result)]
+    cmd = [ff, "-y", "-v", "error", "-i", str(video)]
     if has_audio:
         cmd += ["-i", str(clip), "-map", "0:v:0", "-map", "1:a:0?", "-c:a", "aac", "-b:a", "160k", "-shortest"]
     else:
         cmd += ["-map", "0:v:0"]
-    cmd += ["-c:v", "libx264", "-preset", "veryfast", "-crf", "16", "-pix_fmt", "yuv420p",
-            "-movflags", "+faststart", str(final_tmp)]
+    cmd += ["-vf", cover_filter(width, height), "-c:v", "libx264", "-preset", "medium", "-crf", "16",
+            "-pix_fmt", "yuv420p", *BT709_OUTPUT, "-movflags", "+faststart", str(final_tmp)]
     media.run(cmd)
     os.replace(final_tmp, exports / "wan_final.mp4")
 
-    # Comparativo: original (no tamanho do pacote) | resultado, na mesma altura e no fps do resultado.
-    height = info.height - info.height % 2
+    # Comparativo: vídeo do pacote | final, lado a lado na mesma altura (até 960 px) e no fps do final.
+    wan_input = exports / "wan_input.mp4"
+    if not wan_input.exists():
+        return width, height
+    comp_h = min(960, height)
+    comp_w = round(width * comp_h / height / 2) * 2
     comp_tmp = exports / "comparativo.tmp.mp4"
     graph = (
-        f"[0:v]fps={media.fps_arg(info.fps)},scale=-2:{height},setsar=1[a];"
-        f"[1:v]scale=-2:{height},setsar=1[b];[a][b]hstack=inputs=2[v]"
+        f"[0:v]fps={media.fps_arg(info.fps)},{cover_filter(comp_w, comp_h)}[a];"
+        f"[1:v]scale={comp_w}:{comp_h}:flags=lanczos:in_color_matrix=auto:out_color_matrix=bt709,setsar=1[b];"
+        "[a][b]hstack=inputs=2[v]"
     )
-    cmd = [ff, "-y", "-v", "error", "-i", str(wan_input), "-i", str(result)]
+    cmd = [ff, "-y", "-v", "error", "-i", str(wan_input), "-i", str(exports / "wan_final.mp4")]
     if has_audio:
         cmd += ["-i", str(clip)]
     cmd += ["-filter_complex", graph, "-map", "[v]"]
     if has_audio:
         cmd += ["-map", "2:a:0?", "-c:a", "aac", "-b:a", "160k"]
     cmd += ["-shortest", "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p",
-            "-movflags", "+faststart", str(comp_tmp)]
+            *BT709_OUTPUT, "-movflags", "+faststart", str(comp_tmp)]
     media.run(cmd)
     os.replace(comp_tmp, exports / "comparativo.mp4")
-    return f"Resultado importado: {info.width}x{info.height}, {info.duration:.1f}s."
+    return width, height

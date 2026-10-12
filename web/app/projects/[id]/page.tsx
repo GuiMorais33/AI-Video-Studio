@@ -66,13 +66,14 @@ export default function ProjectPage() {
   // Enquanto houver tarefa ativa, atualiza o progresso.
   const activeJob = project?.active_job ?? null;
   const activeJobId = activeJob?.id;
-  // Geração no Kaggle leva dezenas de minutos: consulta mais espaçada.
+  // Geração no Kaggle e refino do rosto na CPU levam dezenas de minutos: consultas mais espaçadas.
+  const slowJob = activeJob?.kind === "face_refine";
   const remoteJobId = project?.remote_job?.id;
   useEffect(() => {
     if (!activeJobId && !remoteJobId) return;
-    const timer = setInterval(refresh, activeJobId ? 700 : 5000);
+    const timer = setInterval(refresh, activeJobId ? (slowJob ? 2000 : 700) : 5000);
     return () => clearInterval(timer);
-  }, [activeJobId, remoteJobId, refresh]);
+  }, [activeJobId, slowJob, remoteJobId, refresh]);
 
   const lastFrame = (project?.num_frames ?? 1) - 1;
   const goTo = useCallback((idx: number) => setFrame(Math.max(0, Math.min(lastFrame, idx))), [lastFrame]);
@@ -131,7 +132,8 @@ export default function ProjectPage() {
   const status = trackingStatus(project);
   const locked = Boolean(busy || activeJob);
   const markerR = Math.max(project.width, project.height) * 0.009;
-  const imageVersion = `${project.mask_version}-${activeJob ? Math.floor(activeJob.progress * 50) : "idle"}`;
+  // Só o rastreamento muda as máscaras enquanto roda (o refino do rosto não recarrega o quadro).
+  const imageVersion = `${project.mask_version}-${activeJob?.kind === "track" ? Math.floor(activeJob.progress * 50) : "idle"}`;
   const exported = project.exports["preview.mp4"];
   const exportCurrent = exported && project.exported_mask_version === project.mask_version;
   const lastTrack = project.jobs.track;
@@ -239,6 +241,9 @@ export default function ProjectPage() {
               Clique no corpo da pessoa. Se a máscara pegar algo a mais, use Excluir sobre a área errada. Corrija
               em qualquer quadro e rastreie de novo.
             </p>
+            {activeJob?.kind === "face_refine" && (
+              <p className="status warn">O rosto está sendo refinado (etapa 4): a edição volta quando ele terminar.</p>
+            )}
             <div className="row">
               <button
                 disabled={locked || project.clicks.length === 0}

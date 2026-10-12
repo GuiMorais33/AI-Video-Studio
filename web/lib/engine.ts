@@ -7,7 +7,7 @@ export type JobStatus = "queued" | "running" | "done" | "error";
 export interface Job {
   id: string;
   project_id: string;
-  kind: "track" | "export" | "wan_package" | "kaggle";
+  kind: "track" | "export" | "wan_package" | "kaggle" | "face_refine";
   status: JobStatus;
   progress: number;
   message: string | null;
@@ -51,14 +51,36 @@ export interface Project extends ProjectSummary {
   jobs: Partial<Record<Job["kind"], Job>>;
   exports: Record<"preview.mp4" | "mask.mp4" | "masks.zip", boolean>;
   reference: boolean;
-  /** Fotos extras do rosto (01.png, 02.png...), usadas no refino do rosto no Kaggle. */
+  /** Fotos extras do rosto (01.png, 02.png...), usadas no refino do rosto neste computador. */
   faces: string[];
-  /** A imagem ou as fotos do rosto mudaram depois do último pacote: é preciso gerar de novo. */
+  /** A imagem do personagem mudou depois do último pacote: é preciso gerar de novo. */
   wan_package_stale: boolean;
   wan: Record<WanFile, boolean>;
+  /** Refino do rosto (FaceFusion na CPU deste computador), depois que o vídeo do Wan volta. */
+  face_refine: { installed: boolean; result: FaceRefineResult | null };
 }
 
-export type WanFile = "wan_package.zip" | "wan_input.mp4" | "wan_result.mp4" | "wan_final.mp4" | "comparativo.mp4";
+export type WanFile =
+  | "wan_package.zip"
+  | "wan_input.mp4"
+  | "wan_result.mp4"
+  | "wan_final.mp4"
+  | "comparativo.mp4"
+  | "facefusion_rosto.log";
+
+/** exports/face_refine.json: o último refino do rosto do vídeo atual. */
+export interface FaceRefineResult {
+  ok: boolean;
+  /** Por que o refino não foi aplicado (só quando ok = false). */
+  motivo?: string;
+  fotos: number;
+  segundos: number;
+  quadros?: number;
+  /** false: o refino valeu para o quadro inteiro (sem as máscaras do pacote). */
+  mascara?: boolean;
+  avisos?: string[];
+  concluido_em?: string;
+}
 
 export interface KaggleStatus {
   configured: boolean;
@@ -151,6 +173,7 @@ export const engine = {
   kaggleAccount: () => request<KaggleAccount>("/kaggle/account"),
   saveKaggleToken: (token: string) => request<KaggleAccount>("/kaggle/token", json({ token })),
   runOnKaggle: (id: string) => request<Job>(`/projects/${id}/kaggle`, { method: "POST" }),
+  faceRefine: (id: string) => request<Job>(`/projects/${id}/face-refine`, { method: "POST" }),
   uploadWanResult: (id: string, file: File) => {
     const form = new FormData();
     form.append("file", file);

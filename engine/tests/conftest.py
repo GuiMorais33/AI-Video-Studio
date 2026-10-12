@@ -39,7 +39,8 @@ def make_video(
 
 @pytest.fixture
 def settings(tmp_path: Path) -> Settings:
-    return Settings(data_dir=tmp_path / "data", tracker="demo")
+    # Sem FaceFusion: um instalado de verdade no computador não pode entrar nos testes.
+    return Settings(data_dir=tmp_path / "data", tracker="demo", facefusion_dir=tmp_path / "sem-facefusion")
 
 
 @pytest.fixture

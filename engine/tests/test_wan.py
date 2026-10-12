@@ -161,9 +161,11 @@ def test_package_and_result_round_trip(settings, video, tmp_path):
         assert "2 foto(s) salva(s)" in resp.json()["detail"] and "IMG_0001.heic" in resp.json()["detail"]
         detail = client.get(f"/projects/{pid}").json()
         assert detail["faces"] == ["01.png", "03.png", "04.png", "05.png"]
-        assert detail["wan_package_stale"] is True  # o pacote não tem as fotos novas
-        for name in ("04.png", "05.png"):
-            client.delete(f"/projects/{pid}/faces/{name}")
+        # As fotos do rosto só valem aqui (refino do rosto): o pacote do Kaggle continua valendo.
+        assert detail["wan_package_stale"] is False
+        with open(ref, "rb") as f:
+            client.post(f"/projects/{pid}/reference", files={"file": ("p.png", f)})
+        assert client.get(f"/projects/{pid}").json()["wan_package_stale"] is True
         job = _run_job(client, f"/projects/{pid}/wan-package", {"resolution": "480p", "fps": 16, "prompt": "robô"})
         assert job["status"] == "done", job
         detail = client.get(f"/projects/{pid}").json()
@@ -174,8 +176,9 @@ def test_package_and_result_round_trip(settings, video, tmp_path):
             names = set(zf.namelist())
             meta = json.loads(zf.read("job.json"))
             zf.extractall(tmp_path / "pkg")
-        assert {"video.mp4", "reference.png", "job.json", "faces/01.png", "faces/03.png"} <= names
-        assert meta["files"]["faces"] == ["faces/01.png", "faces/03.png"]
+        assert {"video.mp4", "reference.png", "job.json"} <= names
+        assert not any(n.startswith("faces/") for n in names)  # o Kaggle nunca recebe as fotos do rosto
+        assert meta["files"] == {"video": "video.mp4", "masks": "masks/%05d.png", "reference": "reference.png"}
         assert (meta["width"], meta["height"], meta["fps"]) == (832, 464, "16/1")
         assert meta["num_frames"] == 16 and len(meta["source_frame_indices"]) == 16
         assert meta["prompt"] == "robô" and meta["mode"] == "replace" and meta["trimmed_frames"] == 0
@@ -194,12 +197,17 @@ def test_package_and_result_round_trip(settings, video, tmp_path):
         with open(fake, "rb") as f:
             resp = client.post(f"/projects/{pid}/wan-result", files={"file": ("resultado.mp4", f)})
         assert resp.status_code == 200, resp.text
-        wan = resp.json()["project"]["wan"]
+        body = resp.json()
+        wan = body["project"]["wan"]
         assert wan["wan_result.mp4"] and wan["wan_final.mp4"] and wan["comparativo.mp4"]
+        assert "final em 1920x1080" in body["message"]
+        assert body["project"]["face_refine"] == {"installed": False, "result": None}
+        # Deitado: tamanho dos Reels na horizontal, com o áudio do clipe.
         final = media.probe(root / "exports" / "wan_final.mp4")
-        assert final.has_audio and (final.width, final.height) == (832, 464)
+        assert final.has_audio and (final.width, final.height) == (1920, 1080)
+        assert media.count_frames(root / "exports" / "wan_final.mp4") == 16
         comp = media.probe(root / "exports" / "comparativo.mp4")
-        assert comp.width == 2 * 832 and comp.height == 464
+        assert comp.width == 2 * 1706 and comp.height == 960 and comp.has_audio
         assert client.get(f"/projects/{pid}/files/comparativo.mp4").status_code == 200
 
         bogus = tmp_path / "bogus.mp4"
@@ -218,3 +226,30 @@ def test_package_requires_current_tracking(settings, video, tmp_path):
         client.post(f"/projects/{pid}/clicks", json={"frame_idx": 5, "x": 100, "y": 100, "label": 1})
         job = _run_job(client, f"/projects/{pid}/wan-package", {})
         assert job["status"] == "error" and "Rastreie de novo" in job["message"]
+
+
+def test_final_colors_are_bt709(tmp_path):
+    """O final em HD sai convertido e marcado como BT.709 (o que os celulares supõem): sem isso, verdes e
+    vermelhos do vídeo do Wan (BT.601, o padrão do ffmpeg) mudavam até ~25 níveis."""
+    colors = [(220, 40, 40), (40, 200, 60), (40, 60, 220), (230, 180, 140)]
+    img = np.zeros((832, 464, 3), np.uint8)
+    for i, color in enumerate(colors):
+        img[i * 208:(i + 1) * 208] = color
+    Image.fromarray(img).save(tmp_path / "barras.png")
+    root = tmp_path / "proj"
+    (root / "exports").mkdir(parents=True)
+    video = root / "exports" / "wan_result.mp4"
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-loop", "1", "-i", str(tmp_path / "barras.png"), "-frames:v", "4",
+                    "-c:v", "libx264", "-crf", "8", "-pix_fmt", "yuv420p", str(video)], check=True)
+    assert wan.finish_result({"has_audio": 0}, root, video) == (1080, 1920)
+    final = root / "exports" / "wan_final.mp4"
+    tags = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
+                           "stream=color_space,color_primaries,color_transfer", "-of", "csv=p=0", str(final)],
+                          check=True, capture_output=True, text=True).stdout.strip()
+    assert tags == "bt709,bt709,bt709"
+    raw = subprocess.run(["ffmpeg", "-v", "error", "-i", str(final), "-frames:v", "1", "-f", "rawvideo",
+                          "-pix_fmt", "rgb24", "-"], check=True, capture_output=True).stdout
+    got = np.frombuffer(raw, np.uint8).reshape(1920, 1080, 3).astype(float)
+    for i, color in enumerate(colors):
+        band = got[i * 480 + 60:(i + 1) * 480 - 60]
+        assert np.abs(band.mean(axis=(0, 1)) - color).max() < 8, (color, band.mean(axis=(0, 1)))

@@ -8,6 +8,7 @@ import logging
 import shutil
 import uuid
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any, Callable, Literal
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
@@ -16,7 +17,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from PIL import Image
 from pydantic import BaseModel, Field
 
-from . import __version__, diagnose
+from . import __version__, diagnose, face_refine
 from .config import MAX_CLIP_SECONDS, Settings
 from .db import Database
 from .jobs import REMOTE_KINDS, JobConflict, JobRunner
@@ -146,6 +147,10 @@ def create_app(
             "faces": list_face_photos(paths.root),
             "wan_package_stale": package_stale(paths.root),
             "wan": {name: (paths.exports / name).exists() for name in WAN_FILES},
+            "face_refine": {
+                "installed": face_refine.status(settings)["installed"],
+                "result": face_refine.read_result(paths.root),
+            },
         }
 
     def save_upload(upload: UploadFile, directory) -> Any:
@@ -153,6 +158,35 @@ def create_app(
         with open(tmp, "wb") as out:
             shutil.copyfileobj(upload.file, out, 1 << 20)
         return tmp
+
+    def submit_face_refine(project_id: str, *, from_kaggle: bool = False) -> dict[str, Any]:
+        """Refino do rosto na fila local (CPU). JobConflict quando o projeto está ocupado."""
+        root = project_paths(settings, project_id).root
+
+        def conflict() -> str | None:
+            if db.active_job(project_id, exclude=REMOTE_KINDS):
+                return "Já existe uma tarefa em andamento neste projeto."
+            # Chamado de dentro da tarefa do Kaggle (ao importar o resultado), que ainda conta como ativa.
+            if not from_kaggle and db.active_job(project_id, kinds=REMOTE_KINDS):
+                return "O Kaggle está gerando um vídeo novo para este projeto. Aguarde terminar."
+            return None
+
+        def run(progress: Callable[..., None]) -> str:
+            return face_refine.refine(get_project(project_id), root, settings, progress, stop=jobs.stopping)
+
+        return jobs.submit(project_id, "face_refine", run, conflict=conflict)
+
+    def auto_face_refine(project_id: str, *, from_kaggle: bool = False) -> str:
+        """Começa o refino do rosto logo que chega um resultado novo (padrão: o rosto final igual ao das
+        fotos). Devolve um complemento para a mensagem da importação; nunca faz a importação falhar."""
+        if not settings.face_refine_auto or not face_refine.status(settings)["installed"]:
+            return ""
+        try:
+            submit_face_refine(project_id, from_kaggle=from_kaggle)
+        except Exception as exc:
+            log.warning("Refino do rosto automático não começou: %s", exc)
+            return f' O refino do rosto não começou ({exc}). Use "Refazer o refino do rosto".'
+        return " O rosto está sendo refinado neste computador (cerca de 10 a 20 min para 5 s de vídeo)."
 
     @app.get("/health")
     def health() -> dict[str, Any]:
@@ -324,7 +358,7 @@ def create_app(
 
     @app.post("/projects/{project_id}/faces")
     def upload_faces(project_id: str, files: list[UploadFile] = File(...)) -> dict[str, Any]:
-        """Fotos extras do rosto para o refino no Kaggle (várias de uma vez)."""
+        """Fotos extras do rosto para o refino do rosto neste computador (várias de uma vez)."""
         get_project(project_id)
         root = project_paths(settings, project_id).root
         saved, refused = [], []
@@ -406,14 +440,15 @@ def create_app(
             if not (root / "exports" / "wan_package.zip").exists():
                 return "Gere o pacote do Wan antes de enviar ao Kaggle."
             if package_stale(root):
-                return "A imagem ou as fotos do rosto mudaram depois do último pacote. Gere o pacote de novo."
+                return "A imagem do personagem mudou depois do último pacote. Gere o pacote de novo."
             return None
 
+        def import_and_refine(path: Path) -> str:
+            message = import_result(get_project(project_id), root, path)
+            return message + auto_face_refine(project_id, from_kaggle=True)
+
         def run(progress: Callable[..., None]) -> str:
-            return kaggle_remote.run_on_kaggle(
-                get_project(project_id), root, progress,
-                import_result=lambda path: import_result(get_project(project_id), root, path),
-            )
+            return kaggle_remote.run_on_kaggle(get_project(project_id), root, progress, import_result=import_and_refine)
 
         return remote_jobs.submit(project_id, "kaggle", run, conflict=conflict)
 
@@ -427,7 +462,17 @@ def create_app(
             message = import_result(project, root, tmp)
         finally:
             tmp.unlink(missing_ok=True)
+        message += auto_face_refine(project_id)
         return {"message": message, "project": payload(get_project(project_id))}
+
+    @app.post("/projects/{project_id}/face-refine", status_code=202)
+    def face_refine_run(project_id: str) -> dict[str, Any]:
+        get_project(project_id)
+        if not (project_paths(settings, project_id).exports / "wan_result.mp4").exists():
+            raise HTTPException(400, "Importe ou gere o resultado do Wan antes do refino do rosto.")
+        if not face_refine.status(settings)["installed"]:
+            raise HTTPException(400, face_refine.NOT_INSTALLED)
+        return submit_face_refine(project_id)
 
     @app.get("/projects/{project_id}/files/{name}")
     def get_file(project_id: str, name: str) -> FileResponse:
@@ -441,7 +486,7 @@ def create_app(
             raise HTTPException(404, "Arquivo desconhecido.")
         if not path.exists():
             raise HTTPException(404, "Arquivo ainda não gerado.")
-        media_type = "application/zip" if name.endswith(".zip") else "video/mp4"
+        media_type = {".zip": "application/zip", ".log": "text/plain; charset=utf-8"}.get(path.suffix, "video/mp4")
         return FileResponse(path, media_type=media_type, filename=f"{project_id}-{name}",
                             headers={"Cache-Control": "no-store"})
 

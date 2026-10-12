@@ -53,6 +53,28 @@ def test_no_tip_when_torch_uses_the_gpu():
     assert not any("só-CPU" in t for t in tips)
 
 
+def _facefusion(installed: bool, models: bool = True) -> dict[str, Any]:
+    return {"installed": installed, "models": models, "version": "FaceFusion 3.9.1" if installed else None,
+            "reason": None if installed else "FaceFusion não encontrado em /x"}
+
+
+def test_missing_facefusion_points_to_installer():
+    report = _report([])
+    report["ml"]["facefusion"] = _facefusion(False)
+    tips = " ".join(diagnose.recommendations(report))
+    assert "Refino do rosto não instalado" in tips and "bash scripts/setup.sh" in tips
+
+
+def test_facefusion_models_download_once():
+    report = _report([])
+    report["ml"]["facefusion"] = _facefusion(True, models=False)
+    report["disk"]["free_gb"] = 2
+    tips = " ".join(diagnose.recommendations(report))
+    assert "1,7 GB" in tips and "libere espaço" in tips
+    report["ml"]["facefusion"] = _facefusion(True)
+    assert not any("refino do rosto" in t.lower() for t in diagnose.recommendations(report))
+
+
 def test_nvidia_gpus_parses_capability_and_driver(monkeypatch):
     answers = {
         "--query-gpu=name,memory.total": "NVIDIA GeForce RTX 3060, 12288",

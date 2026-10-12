@@ -137,7 +137,13 @@ Check ($r.Output -match "Reinicie o computador") "pede para reiniciar"
 # 4) Pouco espaco no disco do Ubuntu: para antes do setup, explicando o que liberar.
 $r = Invoke-Scenario "pouco espaco" @{ Installed = $true; User = "guimo"; FreeGB = 3.2 }
 Check ($r.Exit -eq 1) "sai com codigo 1"
-Check ($r.Output -match "Pouco espaco no disco D: \(3\.2 GB livres\)\. O AI Video Studio precisa de pelo menos 5 GB") "explica quanto espaco falta"
+Check ($r.Output -match "Pouco espaco no disco D: \(3\.2 GB livres\)\. O AI Video Studio precisa de pelo menos 7 GB") "explica quanto espaco falta"
+Check ($null -eq $global:S.Setup) "nao roda o setup"
+
+# 4a) 6 GB: nao cabe instalar do zero com o refino do rosto (FaceFusion + modelos).
+$r = Invoke-Scenario "6 GB, instalacao do zero" @{ Installed = $true; User = "guimo"; FreeGB = 6 }
+Check ($r.Exit -eq 1) "sai com codigo 1"
+Check ($r.Output -match "\(6 GB livres\)\. O AI Video Studio precisa de pelo menos 7 GB") "pede 7 GB"
 Check ($null -eq $global:S.Setup) "nao roda o setup"
 
 # 4b) Pouco espaco, mas o estudio ja esta instalado: atualizar precisa de pouco, entao segue.
