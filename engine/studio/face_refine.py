@@ -20,6 +20,7 @@ fica sem o refino e a tarefa termina com um aviso.
 
 from __future__ import annotations
 
+import functools
 import io
 import json
 import os
@@ -67,6 +68,10 @@ LOG_FILE = "facefusion_rosto.log"
 FACE_PROGRESS_RE = re.compile(r"processing:\s+(\d+)%")
 # Barras do tqdm no log: baixando modelos, filtro de conteúdo analisando, processando os quadros.
 STAGE_RE = re.compile(r"(downloading|analysing|processing):\s+(\d+)%")
+# Uma barra inteira, com etapa e contador (ex.: "downloading:  20%|##  | 9.54M/47.7M [00:01<?, ?B/s]").
+BAR_RE = re.compile(r"(\w+):\s+\d+%\|[^|]*\|\s*(\S+).*")
+# O setup.sh grava este arquivo no .venv do FaceFusion só quando a instalação inteira deu certo.
+INSTALL_MARKER = ".aivs-ok"
 
 NOT_INSTALLED = "Refino do rosto não instalado: rode o instalador de novo (bash scripts/setup.sh)."
 STOPPED = "Refino do rosto interrompido: o motor foi encerrado. Use \"Refazer o refino do rosto\"."
@@ -85,6 +90,7 @@ def models_present(directory: Path) -> bool:
     return all((models / name).exists() for name in MODEL_FILES)
 
 
+@functools.lru_cache(maxsize=1)  # vai em todo payload: o ffmpeg só é consultado uma vez
 def ffmpeg_version() -> tuple[int, int] | None:
     try:
         out = subprocess.run([media.ffmpeg_bin(), "-version"], capture_output=True, text=True, timeout=30).stdout
@@ -95,21 +101,27 @@ def ffmpeg_version() -> tuple[int, int] | None:
 
 
 def status(settings: Settings, *, deep: bool = False) -> dict[str, Any]:
-    """FaceFusion instalado? O modo simples só olha os arquivos (barato, vai em todo payload);
-    o completo abre o FaceFusion (`--version`), o que pega dependências faltando."""
+    """FaceFusion instalado? O modo simples olha os arquivos e a versão do ffmpeg (barato, vai em
+    todo payload); o completo também abre o FaceFusion (`--version`), o que pega dependências faltando.
+
+    `needs_upgrade`: o motivo é do sistema (ffmpeg antigo), e rodar o instalador de novo não resolve."""
     directory, python = settings.facefusion_dir, settings.facefusion_python_path
     info: dict[str, Any] = {
         "installed": False, "dir": str(directory), "python": str(python), "version": None,
-        "models": models_present(directory), "reason": None,
+        "models": models_present(directory), "reason": None, "needs_upgrade": False,
     }
+    version = ffmpeg_version()
     if not (directory / "facefusion.py").exists():
         info["reason"] = f"FaceFusion não encontrado em {directory}"
     elif not os.access(python, os.X_OK):
         info["reason"] = f"Python do FaceFusion não encontrado em {python}"
-    elif deep and (version := ffmpeg_version()) is not None and version < (5, 1):
+    elif settings.facefusion_python is None and not (directory / ".venv" / INSTALL_MARKER).exists():
+        info["reason"] = "a instalação do FaceFusion não terminou"
+    elif version is not None and version < (5, 1):
         # Ubuntu 22.04 vem com o 4.4: o FaceFusion falharia ao ler e gravar o vídeo.
         info["reason"] = (f"o ffmpeg {version[0]}.{version[1]} deste computador é antigo (o FaceFusion pede 5.1 ou mais "
                           "novo; o Ubuntu 24.04 já vem com ele)")
+        info["needs_upgrade"] = True
     elif deep:
         try:
             proc = subprocess.run([str(python), "facefusion.py", "--version"], cwd=directory,
@@ -124,6 +136,16 @@ def status(settings: Settings, *, deep: bool = False) -> dict[str, Any]:
                 info["reason"] = "o FaceFusion não abriu (dependências incompletas?)" + (f": {tail[0]}" if tail else "")
     info["installed"] = info["reason"] is None
     return info
+
+
+def unavailable_message(info: dict[str, Any]) -> str:
+    """O que dizer quando o refino não pode rodar, com o motivo e o que fazer."""
+    if info.get("needs_upgrade"):
+        return (f"Refino do rosto indisponível: {info['reason']}. Rodar o instalador de novo não resolve: atualize o "
+                "Ubuntu para o 24.04 (sudo do-release-upgrade) e depois rode o instalador.")
+    if info.get("reason"):
+        return f"Refino do rosto não instalado ({info['reason']}): rode o instalador de novo (bash scripts/setup.sh)."
+    return NOT_INSTALLED
 
 
 def read_result(root: Path) -> dict[str, Any] | None:
@@ -325,15 +347,27 @@ def run_facefusion(settings: Settings, sources: list[Path], target: Path, output
         guard.start()
         try:
             last: tuple[str, int] | None = None
+            last_bar: tuple[str, str] | None = None
+            pending = ""  # pedaço de linha que ainda não terminou (\r ou \n)
             # read1: devolve o que já chegou, sem esperar encher o bloco (o progresso fica em dia).
             for chunk in iter(lambda: proc.stdout.read1(65536), b""):
-                last_output[0] = time.monotonic()
                 log.write(chunk)
-                # As barras (tqdm) usam \r: vale a última do pedaço.
-                found = STAGE_RE.findall(chunk.decode(errors="replace"))
-                if found and (found[-1][0], int(found[-1][1])) != last:
-                    last = (found[-1][0], int(found[-1][1]))
-                    on_stage(*last)
+                *lines, pending = re.split(r"[\r\n]", pending + chunk.decode(errors="replace"))
+                for line in lines:
+                    line = line.strip()
+                    # Sinal de vida = texto novo ou barra que andou. Ao retomar um download parado, o
+                    # FaceFusion redesenha a mesma barra sem parar: isso não conta, e o vigia age.
+                    bar = BAR_RE.fullmatch(line)
+                    if bar is None:
+                        if line:
+                            last_output[0] = time.monotonic()
+                    elif (bar[1], bar[2]) != last_bar:
+                        last_bar = (bar[1], bar[2])
+                        last_output[0] = time.monotonic()
+                    found = STAGE_RE.search(line)
+                    if found and (found[1], int(found[2])) != last:
+                        last = (found[1], int(found[2]))
+                        on_stage(*last)
             code = proc.wait()
         finally:
             finished.set()
@@ -364,6 +398,11 @@ def failure_reason(run: FaceFusionRun, settings: Settings) -> str | None:
     if "analysing: 100%" in run.log and not FACE_PROGRESS_RE.search(run.log):
         # A análise terminou e a barra "processing: NN%" nunca apareceu: o filtro recusou o vídeo.
         return "o filtro de conteúdo do FaceFusion barrou o vídeo"
+    if run.code == -signal.SIGKILL:  # o nosso SIGKILL já virou timed_out/stopped: este veio de fora
+        return ("o sistema encerrou o FaceFusion à força, quase sempre por falta de memória: feche outros "
+                "programas (ou aumente a memória do WSL com memory= no .wslconfig) e use \"Refazer o refino do rosto\"")
+    if run.code < 0:
+        return f"o FaceFusion caiu com o sinal {-run.code} (veja exports/facefusion_rosto.log)"
     if run.code == 0:
         return "o FaceFusion terminou sem gerar o vídeo (veja exports/facefusion_rosto.log)"
     return f"o FaceFusion terminou com código {run.code} (veja exports/facefusion_rosto.log)"
@@ -459,8 +498,9 @@ def refine(project: dict[str, Any], root: Path, settings: Settings, progress: Pr
     if not result.exists():
         raise FaceRefineError("Importe ou gere o resultado do Wan antes do refino do rosto.")
     progress(0.0, "Conferindo o FaceFusion")
-    if not status(settings, deep=True)["installed"]:
-        raise FaceRefineError(NOT_INSTALLED)
+    info = status(settings, deep=True)
+    if not info["installed"]:
+        raise FaceRefineError(unavailable_message(info))
     sources = face_sources(root)
     if not sources:
         raise FaceRefineError("Envie a imagem do personagem ou fotos do rosto antes do refino do rosto.")

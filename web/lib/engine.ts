@@ -57,7 +57,12 @@ export interface Project extends ProjectSummary {
   wan_package_stale: boolean;
   wan: Record<WanFile, boolean>;
   /** Refino do rosto (FaceFusion na CPU deste computador), depois que o vídeo do Wan volta. */
-  face_refine: { installed: boolean; result: FaceRefineResult | null };
+  face_refine: {
+    installed: boolean;
+    /** Por que não dá para refinar e o que fazer (só quando installed = false). */
+    message: string | null;
+    result: FaceRefineResult | null;
+  };
 }
 
 export type WanFile =

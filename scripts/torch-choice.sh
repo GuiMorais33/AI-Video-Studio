@@ -5,7 +5,7 @@
 # O PyTorch com GPU vem do PyPI com CUDA 13 (desde o PyTorch 2.11): ~2,8 GB de download e
 # ~7 GB instalado. O CUDA 13 pede driver NVIDIA 580 ou mais novo e placa Turing (RTX 20 /
 # GTX 16) ou mais nova.
-TORCH_CUDA_MIN_FREE_GB=12
+TORCH_CUDA_MIN_FREE_GB=14
 TORCH_CUDA_MIN_DRIVER=580
 TORCH_CUDA_MIN_CAPABILITY=7.5
 TORCH_CPU_INDEX="https://download.pytorch.org/whl/cpu"

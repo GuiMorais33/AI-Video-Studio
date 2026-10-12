@@ -201,7 +201,8 @@ def test_package_and_result_round_trip(settings, video, tmp_path):
         wan = body["project"]["wan"]
         assert wan["wan_result.mp4"] and wan["wan_final.mp4"] and wan["comparativo.mp4"]
         assert "final em 1920x1080" in body["message"]
-        assert body["project"]["face_refine"] == {"installed": False, "result": None}
+        state = body["project"]["face_refine"]
+        assert state["installed"] is False and state["result"] is None and "não instalado" in state["message"]
         # Deitado: tamanho dos Reels na horizontal, com o áudio do clipe.
         final = media.probe(root / "exports" / "wan_final.mp4")
         assert final.has_audio and (final.width, final.height) == (1920, 1080)

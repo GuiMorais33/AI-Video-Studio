@@ -51,6 +51,8 @@ fail() { printf '\nERRO: %s\n' "$*" >&2; exit 1; }
 # Não usa "set -e" aqui dentro (é chamado num if): cada passo devolve o erro explicitamente.
 install_facefusion() {
   local dir="$FACEFUSION_DIR" py="$FACEFUSION_DIR/.venv/bin/python"
+  # O motor só considera o FaceFusion instalado com este marcador, gravado no fim.
+  rm -f "$dir/.venv/.aivs-ok"
   mkdir -p "$dir" || return 1
   [[ -d "$dir/.git" ]] || git init --quiet "$dir" || return 1
   if [[ "$(git -C "$dir" rev-parse HEAD 2>/dev/null)" != "$FACEFUSION_COMMIT" ]]; then
@@ -59,20 +61,34 @@ install_facefusion() {
     # Os modelos baixados (.assets, fora do git) continuam lá.
     git -C "$dir" checkout --quiet --force FETCH_HEAD || return 1
   fi
-  [[ -x "$py" ]] || python3 -m venv "$dir/.venv" || return 1
+  # Python pela metade (ex.: instalação interrompida) não tem pip: recria em vez de reaproveitar.
+  "$py" -m pip --version >/dev/null 2>&1 || python3 -m venv --clear "$dir/.venv" || return 1
   "$py" -m pip install --quiet --upgrade pip || return 1
-  if ! "$py" -m pip install --quiet --no-cache-dir "${FACEFUSION_PACKAGES[@]}"; then
-    # Ex.: o Python 3.10 do Ubuntu 22.04 não instala o numpy 2.4.
-    echo "As versões fixas não instalaram neste Python; tentando as versões compatíveis mais novas."
-    "$py" -m pip install --quiet --no-cache-dir "${FACEFUSION_PACKAGES[@]%%==*}" || return 1
-  fi
+  "$py" -m pip install --quiet --no-cache-dir "${FACEFUSION_PACKAGES[@]}" || return 1
   # Confere que ele abre (importa onnxruntime, OpenCV...).
   (cd "$dir" && "$py" facefusion.py --version) || return 1
+  touch "$dir/.venv/.aivs-ok"
+}
+
+# Imprime por que este Ubuntu não roda o FaceFusion 3.9.1; nada quando roda.
+facefusion_blocker() {
+  local py ff
+  py="$(python3 -c 'import sys; print(*sys.version_info[:2])')"
+  ff="$(ffmpeg -version 2>/dev/null | sed -nE '1s/^ffmpeg version n?([0-9]+)\.([0-9]+).*/\1 \2/p')"
+  read -r py_major py_minor <<<"$py"
+  if (( py_major < 3 || (py_major == 3 && py_minor < 11) )); then
+    echo "o Python $py_major.$py_minor deste Ubuntu é antigo (o FaceFusion pede 3.11 ou mais novo)"
+  elif [[ -n "$ff" ]]; then
+    read -r ff_major ff_minor <<<"$ff"
+    if (( ff_major < 5 || (ff_major == 5 && ff_minor < 1) )); then
+      echo "o FFmpeg $ff_major.$ff_minor deste Ubuntu é antigo (o FaceFusion pede 5.1 ou mais novo)"
+    fi
+  fi
 }
 
 facefusion_warning() {
   printf '\nAviso: FaceFusion não instalado: %s.\n' "$1"
-  echo "O estúdio funciona, mas o vídeo final sai sem o refino do rosto. Rode o instalador de novo depois."
+  echo "O estúdio funciona, mas o vídeo final sai sem o refino do rosto. ${2:-Rode o instalador de novo depois.}"
 }
 
 APT_PACKAGES=(python3 python3-venv python3-pip git ffmpeg curl xz-utils)
@@ -149,7 +165,11 @@ step "Instalando o motor do AI Video Studio"
 "$PY" -m pip install --quiet -e "$ROOT/engine[dev,kaggle]"
 
 step "Instalando FaceFusion 3.9.1 (refino do rosto, roda neste computador)"
-if [[ ! -x "$FACEFUSION_DIR/.venv/bin/python" ]] && (( $(disk_free_gb "$ROOT") < FACEFUSION_MIN_FREE_GB )); then
+ff_blocker="$(facefusion_blocker)"
+if [[ -n "$ff_blocker" ]]; then
+  # Ubuntu 22.04: rodar de novo não resolve.
+  facefusion_warning "$ff_blocker" "Atualize o Ubuntu para o 24.04 (sudo do-release-upgrade) e rode o instalador de novo."
+elif [[ ! -x "$FACEFUSION_DIR/.venv/bin/python" ]] && (( $(disk_free_gb "$ROOT") < FACEFUSION_MIN_FREE_GB )); then
   facefusion_warning "pouco espaço em disco (o refino do rosto precisa de ~$FACEFUSION_MIN_FREE_GB GB: ~0,5 GB agora e ~1,7 GB de modelos no primeiro uso)"
 elif install_facefusion; then
   echo "FaceFusion pronto. Os modelos (~1,7 GB) baixam no primeiro refino do rosto."

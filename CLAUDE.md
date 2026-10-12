@@ -56,3 +56,5 @@ bash scripts/tests/setup.test.sh && bash scripts/tests/torch-choice.test.sh  # s
     instalado pelo `setup.sh` em `engine/.vendor/facefusion`, tarefa `face_refine` disparada
     sozinha depois de importar o resultado. Usa as fotos de `faces/` (ou a referência), troca só
     dentro da máscara e grava `wan_final.mp4` em 1080x1920 com o áudio.
+  - O FaceFusion local pede Ubuntu 24.04 (Python 3.11+, FFmpeg 5.1+). O `setup.sh` grava
+    `.venv/.aivs-ok` só quando a instalação termina; sem ele, o motor não o considera instalado.

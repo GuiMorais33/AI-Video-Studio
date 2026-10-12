@@ -30,6 +30,8 @@ KERNEL_TITLE = "AI Video Studio Wan Animate"
 NOTEBOOK = REPO_ROOT / "remote" / "kaggle" / "wan_animate_kaggle.ipynb"
 TOKEN_FILE = Path.home() / ".kaggle" / "access_token"
 POLL_SECONDS = 30
+# Consultas de status seguidas que podem falhar (rede, proxy, 502/429) antes de desistir (~5 min).
+MAX_STATUS_FAILURES = 10
 MAX_WAIT_SECONDS = 12 * 3600  # limite de uma sessão do Kaggle
 RESULT_NAME = "resultado.mp4"
 # O notebook imprime linhas "AIVS_PROGRESS <0-1> <mensagem>" que viram progresso aqui.
@@ -353,8 +355,10 @@ def run_on_kaggle(
     # Dois estúdios (ex.: casa e loja) usam o mesmo notebook: um envio novo atropelaria o outro.
     if _busy(api, kernel_id):
         raise KaggleError(
-            "Já há uma execução deste notebook rodando no Kaggle (talvez iniciada em outro computador). "
-            f"Espere terminar ou pare em https://www.kaggle.com/code/{kernel_id} e tente de novo."
+            "Já há uma execução deste notebook na fila ou rodando no Kaggle (um envio anterior deste computador "
+            f"ou de outro). Se for a sua, quando terminar baixe {RESULT_NAME} em "
+            f"https://www.kaggle.com/code/{kernel_id}/output e importe na etapa 4. Para gerar de novo, pare a "
+            f"execução em https://www.kaggle.com/code/{kernel_id} e envie outra vez."
         )
 
     with tempfile.TemporaryDirectory(prefix="aivs-kaggle-") as tmp_name:
@@ -409,13 +413,26 @@ def run_on_kaggle(
         last_fraction = 0.05
         seen_active, polls = False, 0
         stage = ""  # última etapa desta execução: explica um cancelamento
+        response, failures = None, 0
         follower = _LogFollower(api, kernel_id, run_id)
         try:
             while True:
                 time.sleep(POLL_SECONDS)
                 polls += 1
-                response = api.kernels_status(kernel_id)
-                status = _status_name(response)
+                try:
+                    response = api.kernels_status(kernel_id)
+                    status, failures = _status_name(response), 0
+                except Exception as exc:
+                    # Uma falha de rede no meio de uma geração de 40 min não pode perder a execução.
+                    failures += 1
+                    if failures >= MAX_STATUS_FAILURES:
+                        raise KaggleError(
+                            f"Perdi o contato com o Kaggle ({type(exc).__name__}). A execução pode continuar lá: "
+                            f"quando terminar, baixe {RESULT_NAME} em https://www.kaggle.com/code/{kernel_id}/output "
+                            "e importe na etapa 4."
+                        ) from exc
+                    progress(last_fraction, f"Kaggle: sem resposta, tentando de novo ({failures}/{MAX_STATUS_FAILURES})")
+                    continue
                 seen_active = seen_active or status in ACTIVE
                 if seen_active:
                     follower.start()

@@ -94,6 +94,8 @@ versão refinada.
 - **Tempo:** roda na CPU, então é mais lento que o Kaggle: cerca de 10 min para 5 s de vídeo (77
   quadros) num processador de 4 núcleos, mais em notebooks mais simples.
 - **Primeira vez:** baixa cerca de 1,7 GB de modelos do FaceFusion (do GitHub).
+- **Requisito:** Ubuntu 24.04 no WSL (Python 3.11+ e FFmpeg 5.1+). No 22.04 o instalador avisa e o
+  estúdio funciona sem o refino; atualize com `sudo do-release-upgrade` e rode o instalador de novo.
 - **Trocou as fotos do rosto?** Clique em **Refazer o refino do rosto**. Não precisa gerar no Kaggle
   de novo.
 
@@ -102,7 +104,9 @@ O refino fica de fora, com aviso na etapa 4 e o vídeo sem ele, quando:
 - o filtro de conteúdo adulto do FaceFusion barra o vídeo. Esse filtro fica ligado e não pega vídeo
   comum: no vídeo de dança dos testes, nenhum quadro foi marcado;
 - o FaceFusion passa 20 min sem dar sinal de vida (ex.: download de modelo travado). O processo é
-  encerrado.
+  encerrado;
+- o sistema encerra o FaceFusion por falta de memória. Feche outros programas ou aumente a memória do
+  WSL (`memory=` no `.wslconfig`).
 
 O log completo fica em `data/projects/<projeto>/exports/facefusion_rosto.log`.
 

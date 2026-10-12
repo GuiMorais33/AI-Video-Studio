@@ -182,7 +182,14 @@ class FrameWriter:
         )
 
     def write(self, frame: np.ndarray) -> None:
-        self._proc.stdin.write(np.ascontiguousarray(frame, dtype=np.uint8).tobytes())
+        try:
+            self._proc.stdin.write(np.ascontiguousarray(frame, dtype=np.uint8).tobytes())
+        except BrokenPipeError:  # o ffmpeg parou no meio (ex.: disco cheio): mostra o motivo dele
+            err = self._proc.stderr.read().decode(errors="replace")
+            self._proc.wait()
+            if "No space left" in err:
+                raise MediaError(f"Sem espaço no disco para gravar {self.path.name}: libere espaço e tente de novo.") from None
+            raise MediaError(f"Falha ao gravar {self.path.name}:\n{err[-800:]}") from None
 
     def close(self) -> None:
         """Termina o arquivo; erro do ffmpeg vira MediaError."""

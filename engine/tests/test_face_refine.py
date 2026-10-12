@@ -33,6 +33,12 @@ value = lambda flag: args[args.index(flag) + 1]
 (here / "args.json").write_text(json.dumps(args))
 shutil.copyfile(value("-t"), here / "alvo.mp4")
 mode = os.environ.get("FAKE_FACEFUSION_MODE", "ok")
+if mode == "spin":  # download retomado que não anda: o FaceFusion redesenha a mesma barra para sempre
+    (here / "pids").write_text(str(os.getpid()))
+    while True:
+        sys.stdout.write("\rdownloading:  20%|##        | 9.54M/47.7M [00:01<?, ?B/s]")
+        sys.stdout.flush()
+        time.sleep(0.05)
 if mode == "hang":  # download travado: um filho (como o curl) segura a saída aberta
     child = subprocess.Popen(["sleep", "300"])
     (here / "pids").write_text(f"{os.getpid()} {child.pid}")
@@ -62,6 +68,7 @@ def fake_facefusion(tmp_path) -> Path:
     python = root / ".venv" / "bin" / "python"
     python.write_text(f'#!/bin/sh\nexec "{sys.executable}" "$@"\n')
     python.chmod(0o755)
+    (root / ".venv" / face_refine.INSTALL_MARKER).touch()  # o setup.sh grava ao terminar
     return root
 
 
@@ -148,7 +155,7 @@ def test_import_refines_face_automatically(ff_settings, fake_facefusion, tmp_pat
         root = project_paths(ff_settings, pid).root
         result = _video(tmp_path / "resultado.mp4", "464x832", 16)
         body = _import(client, pid, result)
-        assert "refinado neste computador" in body["message"]
+        assert "refino do rosto começou neste computador" in body["message"]
 
         detail = client.get(f"/projects/{pid}").json()
         job = detail["jobs"]["face_refine"]
@@ -281,7 +288,7 @@ def test_kaggle_import_starts_face_refine(ff_settings, monkeypatch, tmp_path):
         client.app.state.remote_jobs.wait_idle(timeout=60)
         client.app.state.jobs.wait_idle(timeout=120)
         jobs = client.get(f"/projects/{pid}").json()["jobs"]
-        assert jobs["kaggle"]["status"] == "done" and "refinado neste computador" in jobs["kaggle"]["message"]
+        assert jobs["kaggle"]["status"] == "done" and "refino do rosto começou neste computador" in jobs["kaggle"]["message"]
         assert jobs["face_refine"]["status"] == "done", jobs["face_refine"]
 
 
@@ -331,6 +338,27 @@ def test_inactivity_timeout_kills_the_group(ff_settings, monkeypatch, fake_facef
     assert _wait_dead(pids), "sobrou processo do FaceFusion"
 
 
+def test_repeated_progress_bar_is_not_a_sign_of_life(ff_settings, monkeypatch, fake_facefusion, tmp_path):
+    """Ao retomar um download parado, o FaceFusion redesenha a mesma barra sem parar: o vigia age igual."""
+    monkeypatch.setenv("FAKE_FACEFUSION_MODE", "spin")
+    settings = dataclasses.replace(ff_settings, facefusion_idle_timeout_s=1.5)
+    with TestClient(create_app(settings)) as client:
+        pid = _portrait_project(client, tmp_path, faces=0)
+        start = time.monotonic()
+        _import(client, pid, _video(tmp_path / "resultado.mp4", "464x832", 16))
+        assert time.monotonic() - start < 60
+        job = client.get(f"/projects/{pid}").json()["jobs"]["face_refine"]
+        assert job["status"] == "done" and "sem dar sinal" in job["message"], job
+    assert _wait_dead([int((fake_facefusion / "pids").read_text())]), "sobrou processo do FaceFusion"
+
+
+def test_signal_kill_explains_memory(ff_settings):
+    oom = face_refine.FaceFusionRun(code=-9, log="processing: 30%", output_ok=False)
+    assert "falta de memória" in face_refine.failure_reason(oom, ff_settings)
+    crash = face_refine.FaceFusionRun(code=-11, log="processing: 30%", output_ok=False)
+    assert "sinal 11" in face_refine.failure_reason(crash, ff_settings)
+
+
 def test_engine_shutdown_stops_facefusion(ff_settings, monkeypatch, fake_facefusion, tmp_path):
     monkeypatch.setenv("FAKE_FACEFUSION_MODE", "hang")
     with TestClient(create_app(ff_settings)) as client:
@@ -357,21 +385,33 @@ def test_not_installed(settings, tmp_path):
     with TestClient(create_app(settings)) as client:
         pid = _portrait_project(client, tmp_path, faces=0)
         body = _import(client, pid, _video(tmp_path / "resultado.mp4", "464x832", 16))
-        assert "refin" not in body["message"]
+        assert "Refino do rosto não instalado" in body["message"] and "setup.sh" in body["message"]
         detail = client.get(f"/projects/{pid}").json()
-        assert detail["face_refine"] == {"installed": False, "result": None}
+        state = detail["face_refine"]
+        assert state["installed"] is False and state["result"] is None
+        assert state["message"].startswith("Refino do rosto não instalado (FaceFusion não encontrado")
         assert "face_refine" not in detail["jobs"]
         resp = client.post(f"/projects/{pid}/face-refine")
-        assert resp.status_code == 400 and resp.json()["detail"] == face_refine.NOT_INSTALLED
+        assert resp.status_code == 400 and resp.json()["detail"] == state["message"]
     info = face_refine.status(settings, deep=True)
     assert info["installed"] is False and "não encontrado" in info["reason"]
 
 
-def test_old_ffmpeg_is_reported(ff_settings, monkeypatch):
+def test_old_ffmpeg_is_reported(ff_settings, monkeypatch, tmp_path):
+    """Ubuntu 22.04 (ffmpeg 4.4): não adianta rodar o instalador de novo, e o refino nem começa."""
     monkeypatch.setattr(face_refine, "ffmpeg_version", lambda: (4, 4))
-    info = face_refine.status(ff_settings, deep=True)
-    assert info["installed"] is False and "ffmpeg 4.4" in info["reason"] and "5.1" in info["reason"]
-    assert face_refine.status(ff_settings)["installed"] is True  # o modo simples não roda o ffmpeg
+    for deep in (False, True):
+        info = face_refine.status(ff_settings, deep=deep)
+        assert info["installed"] is False and info["needs_upgrade"] is True
+        assert "ffmpeg 4.4" in info["reason"] and "5.1" in info["reason"]
+    message = face_refine.unavailable_message(info)
+    assert "não resolve" in message and "24.04" in message and "setup.sh" not in message
+    with TestClient(create_app(ff_settings)) as client:
+        pid = _portrait_project(client, tmp_path, faces=0)
+        body = _import(client, pid, _video(tmp_path / "resultado.mp4", "464x832", 16))
+        assert message in body["message"]
+        detail = client.get(f"/projects/{pid}").json()
+        assert "face_refine" not in detail["jobs"] and detail["face_refine"]["message"] == message
 
 
 def test_broken_install_fails_the_job(ff_settings, fake_facefusion, tmp_path):
@@ -384,7 +424,15 @@ def test_broken_install_fails_the_job(ff_settings, fake_facefusion, tmp_path):
         pid = _portrait_project(client, tmp_path, faces=0)
         _import(client, pid, _video(tmp_path / "resultado.mp4", "464x832", 16))
         job = client.get(f"/projects/{pid}").json()["jobs"]["face_refine"]
-        assert job["status"] == "error" and job["message"] == face_refine.NOT_INSTALLED
+        assert job["status"] == "error" and "dependências" in job["message"] and "setup.sh" in job["message"]
+
+
+def test_unfinished_install_is_not_installed(ff_settings, fake_facefusion):
+    """O setup.sh caiu depois de criar o .venv: sem o marcador, não conta como instalado."""
+    (fake_facefusion / ".venv" / face_refine.INSTALL_MARKER).unlink()
+    info = face_refine.status(ff_settings)
+    assert info["installed"] is False and "não terminou" in info["reason"]
+    assert "rode o instalador de novo" in face_refine.unavailable_message(info)
 
 
 def test_old_1080x1920_result_uses_package_masks(ff_settings, fake_facefusion, tmp_path):

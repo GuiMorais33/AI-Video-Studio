@@ -155,6 +155,19 @@ def _torch_info() -> dict[str, Any]:
     return info
 
 
+def _free_gb(path: Path) -> float:
+    """GB livres para o projeto. No WSL o disco do Ubuntu mostra o tamanho virtual (~1 TB): o limite
+    real é o disco do Windows onde ele fica (igual ao disk_free_gb do scripts/torch-choice.sh)."""
+    free = shutil.disk_usage(path).free
+    if os.environ.get("WSL_DISTRO_NAME"):
+        windows = Path(os.environ.get("AIVS_WSL_MOUNTS", "/mnt")) / os.environ.get("AIVS_WIN_DRIVE", "c").lower()
+        try:
+            free = min(free, shutil.disk_usage(windows).free)
+        except OSError:
+            pass
+    return round(free / GB, 1)
+
+
 def collect(settings: Settings | None = None) -> dict[str, Any]:
     settings = settings or Settings.from_env()
     total_ram, avail_ram = _memory()
@@ -180,7 +193,7 @@ def collect(settings: Settings | None = None) -> dict[str, Any]:
             "ram_available_gb": round(avail_ram, 1) if avail_ram else None,
             "nvidia_gpus": _nvidia_gpus(),
         },
-        "disk": {"path": str(disk_root), "free_gb": round(shutil.disk_usage(disk_root).free / GB, 1)},
+        "disk": {"path": str(disk_root), "free_gb": _free_gb(disk_root)},
         "tools": {
             "ffmpeg": ffmpeg,
             "ffprobe": _tool("ffprobe", ["-version"]),
@@ -243,8 +256,8 @@ def recommendations(r: dict[str, Any]) -> list[str]:
         tips.append("Checkpoint do SAM 2.1 ausente: rode `studio models download`.")
     facefusion = ml.get("facefusion")
     if facefusion is not None and not facefusion["installed"]:
-        tips.append(f"{face_refine.NOT_INSTALLED[:-1]}. Sem ele, o vídeo final sai com o rosto gerado pelo Wan "
-                    f"({facefusion['reason']}).")
+        tips.append(f"{face_refine.unavailable_message(facefusion)} Sem ele, o vídeo final sai com o rosto gerado "
+                    "pelo Wan.")
     elif facefusion is not None and not facefusion["models"]:
         tips.append("O primeiro refino do rosto baixa ~1,7 GB de modelos (uma vez só)"
                     + (": libere espaço no disco antes." if r["disk"]["free_gb"] < 3 else "."))

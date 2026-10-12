@@ -37,7 +37,7 @@ check "sem placa NVIDIA usa CPU" 50 "nenhuma placa NVIDIA"
 
 fake_gpu "NVIDIA GeForce RTX 3060, 8.6, 581.57"
 check "RTX 3060 com driver 581 e espaço usa a GPU" 50 ""
-check "pouco espaço usa CPU" 11 "só 11 GB livres"
+check "pouco espaço usa CPU" 13 "só 13 GB livres"
 
 fake_gpu "NVIDIA GeForce GTX 1060 6GB, 6.1, 581.57"
 check "GTX 1060 (Pascal) usa CPU" 50 "anterior às RTX 20"

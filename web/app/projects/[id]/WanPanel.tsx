@@ -50,7 +50,8 @@ export function WanPanel({ project, locked, run }: Props) {
   const version = [
     project.mask_version,
     lastJob?.updated_at ?? "",
-    lastKaggle?.updated_at ?? "",
+    // A tarefa do Kaggle muda a cada consulta de progresso: só conta quando termina.
+    lastKaggle && lastKaggle.status !== "queued" && lastKaggle.status !== "running" ? lastKaggle.updated_at : "",
     refined?.concluido_em ?? "",
     resultVersion,
   ].join("-");
@@ -310,8 +311,8 @@ export function WanPanel({ project, locked, run }: Props) {
             </p>
           ) : (
             <p className="status warn">
-              Refino do rosto não instalado neste computador: rode o instalador de novo (bash scripts/setup.sh). Sem
-              ele, o vídeo final fica com o rosto gerado pelo Wan.
+              {faceRefine.message ?? "Refino do rosto não instalado neste computador."} Sem ele, o vídeo final fica com o
+              rosto gerado pelo Wan.
             </p>
           )}
           {faceJob ? (

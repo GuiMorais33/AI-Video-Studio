@@ -7,7 +7,7 @@
 # O que ele faz, pedindo confirmacao so quando o Windows exigir:
 #   1. Instala o WSL2 com Ubuntu, se faltar (pede permissao de administrador e, as vezes, reinicio).
 #   2. Abre o Ubuntu uma vez para voce criar usuario e senha, se ainda nao criou.
-#   3. Confere o espaco livre no disco do Ubuntu (7 GB no minimo; 12 GB para usar placa NVIDIA).
+#   3. Confere o espaco livre no disco do Ubuntu (7 GB no minimo; 14 GB para usar placa NVIDIA).
 #   4. Dentro do Ubuntu: baixa o projeto em ~/AI-Video-Studio e roda scripts/setup.sh
 #      (instala Python, FFmpeg, PyTorch, SAM 2.1, FaceFusion, Node.js e o painel; pede a senha do Ubuntu).
 #   5. Cria o atalho "AI Video Studio" na Area de Trabalho para abrir o estudio.
@@ -131,13 +131,13 @@ if ($space) {
     if ($alreadyInstalled) { $minGB = 1 }
     if ($space.GB -lt $minGB) {
         Stop-Installer ("Pouco espaco no disco $($space.Letter): ($($space.GB) GB livres). O AI Video Studio precisa de pelo menos $minGB GB " +
-            "(12 GB para usar a placa NVIDIA). Libere espaco (Lixeira, Downloads, Configuracoes > Sistema > Armazenamento) " +
+            "(14 GB para usar a placa NVIDIA). Libere espaco (Lixeira, Downloads, Configuracoes > Sistema > Armazenamento) " +
             "e rode este instalador de novo.")
     }
-    if ($space.GB -lt 12) {
+    if ($space.GB -lt 14) {
         # Numa instalacao que ja existe, TORCH=cpu nao muda nada: o PyTorch instalado fica.
         if (-not $alreadyInstalled) {
-            Write-Host "Menos de 12 GB livres: instalando o PyTorch so-CPU (~200 MB), mesmo se houver placa NVIDIA."
+            Write-Host "Menos de 14 GB livres: instalando o PyTorch so-CPU (~200 MB), mesmo se houver placa NVIDIA."
         }
         $setupEnv += "TORCH=cpu "
     }

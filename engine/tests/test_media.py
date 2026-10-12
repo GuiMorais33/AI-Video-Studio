@@ -1,5 +1,6 @@
 from fractions import Fraction
 
+import numpy as np
 import pytest
 
 from studio import media
@@ -52,3 +53,14 @@ def test_probe_rejects_non_video(tmp_path):
     bogus.write_text("not a video")
     with pytest.raises(media.MediaError):
         media.probe(bogus)
+
+
+def test_frame_writer_reports_ffmpeg_dying(tmp_path):
+    """Se o ffmpeg cair no meio (ex.: disco cheio), a gravação explica o motivo em vez de 'Broken pipe'."""
+    writer = media.FrameWriter(tmp_path / "x.mp4", 64, 48, Fraction(16))
+    writer._proc.kill()
+    writer._proc.wait()
+    with pytest.raises(media.MediaError, match="x.mp4"):
+        for _ in range(200):
+            writer.write(np.zeros((48, 64, 3), np.uint8))
+    writer.abort()

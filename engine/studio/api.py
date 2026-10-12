@@ -147,10 +147,16 @@ def create_app(
             "faces": list_face_photos(paths.root),
             "wan_package_stale": package_stale(paths.root),
             "wan": {name: (paths.exports / name).exists() for name in WAN_FILES},
-            "face_refine": {
-                "installed": face_refine.status(settings)["installed"],
-                "result": face_refine.read_result(paths.root),
-            },
+            "face_refine": face_refine_state(paths.root),
+        }
+
+    def face_refine_state(root) -> dict[str, Any]:
+        info = face_refine.status(settings)
+        return {
+            "installed": info["installed"],
+            # Por que não dá para refinar e o que fazer (ex.: ffmpeg antigo pede atualizar o Ubuntu).
+            "message": None if info["installed"] else face_refine.unavailable_message(info),
+            "result": face_refine.read_result(root),
         }
 
     def save_upload(upload: UploadFile, directory) -> Any:
@@ -179,14 +185,18 @@ def create_app(
     def auto_face_refine(project_id: str, *, from_kaggle: bool = False) -> str:
         """Começa o refino do rosto logo que chega um resultado novo (padrão: o rosto final igual ao das
         fotos). Devolve um complemento para a mensagem da importação; nunca faz a importação falhar."""
-        if not settings.face_refine_auto or not face_refine.status(settings)["installed"]:
+        if not settings.face_refine_auto:
             return ""
+        info = face_refine.status(settings)
+        if not info["installed"]:
+            return " " + face_refine.unavailable_message(info)
         try:
             submit_face_refine(project_id, from_kaggle=from_kaggle)
         except Exception as exc:
             log.warning("Refino do rosto automático não começou: %s", exc)
             return f' O refino do rosto não começou ({exc}). Use "Refazer o refino do rosto".'
-        return " O rosto está sendo refinado neste computador (cerca de 10 a 20 min para 5 s de vídeo)."
+        # Fica gravada na tarefa: dizer o que aconteceu, não o que está acontecendo.
+        return ' O refino do rosto começou neste computador (acompanhe em "Refino do rosto").'
 
     @app.get("/health")
     def health() -> dict[str, Any]:
@@ -470,8 +480,9 @@ def create_app(
         get_project(project_id)
         if not (project_paths(settings, project_id).exports / "wan_result.mp4").exists():
             raise HTTPException(400, "Importe ou gere o resultado do Wan antes do refino do rosto.")
-        if not face_refine.status(settings)["installed"]:
-            raise HTTPException(400, face_refine.NOT_INSTALLED)
+        info = face_refine.status(settings)
+        if not info["installed"]:
+            raise HTTPException(400, face_refine.unavailable_message(info))
         return submit_face_refine(project_id)
 
     @app.get("/projects/{project_id}/files/{name}")

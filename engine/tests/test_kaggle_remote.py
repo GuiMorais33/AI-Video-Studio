@@ -257,7 +257,8 @@ def test_refuses_when_notebook_already_running(monkeypatch, project_root, previo
     _patch(monkeypatch, api)
     with pytest.raises(kaggle_remote.KaggleError, match="Já há uma execução deste notebook") as info:
         kaggle_remote.run_on_kaggle({"id": "abc123"}, root, lambda *a: None, lambda p: "", notebook=notebook)
-    assert f"pare em {KERNEL_URL} e tente de novo." in str(info.value)
+    assert f"pare a execução em {KERNEL_URL} e envie outra vez." in str(info.value)
+    assert f"{KERNEL_URL}/output e importe na etapa 4" in str(info.value)
     assert api.calls == [("status_before_push",)]
     assert api.uploaded == []
 
@@ -491,3 +492,36 @@ def test_log_follower_thread_survives_stream_errors(monkeypatch):
         time.sleep(0.01)
     follower.stop()
     assert follower.latest() == (0.2, "Pose 3/77") and len(calls) >= 9
+
+
+def test_transient_status_failures_do_not_lose_the_run(monkeypatch, project_root):
+    """Uma falha de rede no meio da geração não derruba o acompanhamento."""
+    class Api(FakeApi):
+        flaky = 3
+
+        def kernels_status(self, kernel_id):
+            if self.pushed_metadata and self.flaky:
+                self.flaky -= 1
+                raise ConnectionError("Max retries exceeded")
+            return super().kernels_status(kernel_id)
+
+    root, notebook = project_root
+    api = Api()
+    _patch(monkeypatch, api)
+    messages = []
+    imported = kaggle_remote.run_on_kaggle({"id": "abc123"}, root, lambda f, m=None: messages.append(m),
+                                           lambda p: "importado", notebook=notebook)
+    assert imported.startswith("importado")
+    assert any(m and "sem resposta, tentando de novo (1/" in m for m in messages)
+
+
+def test_gives_up_after_many_status_failures(monkeypatch, project_root):
+    class Api(FakeApi):
+        def kernels_status(self, kernel_id):
+            if self.pushed_metadata:
+                raise ConnectionError("Max retries exceeded")
+            return super().kernels_status(kernel_id)
+
+    message = _run_error(monkeypatch, project_root, Api())
+    assert message.startswith("Perdi o contato com o Kaggle (ConnectionError). A execução pode continuar lá")
+    assert f"{KERNEL_URL}/output e importe na etapa 4." in message
