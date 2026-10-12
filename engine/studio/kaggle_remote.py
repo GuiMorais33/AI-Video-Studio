@@ -468,7 +468,9 @@ def run_on_kaggle(
         elif report_data:
             (root / "exports" / "kaggle_relatorio.json").write_text(json.dumps(report_data, indent=2, ensure_ascii=False))
         if status != "COMPLETE":
-            errors = ERROR_RE.findall(log)
+            # Só o log desta execução: sem a linha AIVS_RUN, o log ainda pode ser o de um envio anterior.
+            start = log.find(f"AIVS_RUN {run_id}")
+            errors = ERROR_RE.findall(log, start) if start >= 0 else []
             final = _progress_for_run(log, run_id)
             raise _unfinished(
                 status,
