@@ -39,7 +39,8 @@ O roteiro completo e o que foi revisado no plano original estão em
 O estúdio roda no Ubuntu dentro do WSL2, como a Meta recomenda para o SAM 2. Você continua usando
 o navegador do Windows.
 
-**Espaço livre no disco C:** pelo menos 5 GB. Para usar uma placa NVIDIA no SAM 2 são 12 GB, porque
+**Espaço livre no disco C:** pelo menos 7 GB (incluindo ~2,2 GB do refino do rosto: o FaceFusion e
+os modelos dele, baixados no primeiro uso). Para usar uma placa NVIDIA no SAM 2 são 12 GB, porque
 o PyTorch com GPU tem ~7 GB. Com menos que isso, o instalador usa a versão só-CPU (~200 MB), que
 funciona igual, só que mais devagar.
 
@@ -68,6 +69,8 @@ O instalador:
     - só-CPU nos outros casos, ou se o download da versão com GPU falhar. Depois de atualizar o
       driver ou liberar espaço, rodar o instalador de novo troca para a versão com GPU;
   - instala o SAM 2 oficial da Meta numa versão fixa;
+  - instala o **FaceFusion 3.9.1** (refino do rosto, na CPU) com um Python próprio em
+    `engine/.vendor/facefusion`. Se falhar, o estúdio funciona sem o refino e avisa;
   - baixa o checkpoint **SAM 2.1 Tiny** (~156 MB);
   - instala o Node.js 22 se o do sistema for antigo;
   - instala o painel;
