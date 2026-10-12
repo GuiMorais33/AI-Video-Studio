@@ -37,8 +37,8 @@ bash scripts/tests/setup.test.sh && bash scripts/tests/torch-choice.test.sh  # s
   - O estado do SAM 2 vive só na memória. Ao reconstruir, os quadros com cliques viram condição
     via `add_new_mask` com a máscara do disco.
   - Desfazer restaura o PNG salvo em `history/<click_id>.png`.
-- Tarefas longas (rastrear, exportar) rodam em um único worker (`jobs.py`), com progresso no
-  SQLite. Cliques retornam 409 enquanto há tarefa ativa.
+- Tarefas longas (rastrear, exportar, refino do rosto) rodam em um único worker (`jobs.py`), com
+  progresso no SQLite. Cliques retornam 409 enquanto há tarefa ativa.
 - O painel (`web/`) fala direto com o motor via CORS (`NEXT_PUBLIC_ENGINE_URL`).
 - Fase 3:
   - `remote/kaggle/aivs_wan.py` é a fonte do notebook. Depois de editá-lo, rode
@@ -47,6 +47,12 @@ bash scripts/tests/setup.test.sh && bash scripts/tests/torch-choice.test.sh  # s
   - O motor envia o pacote ao Kaggle por `engine/studio/kaggle_remote.py`, com tarefas `kaggle`
     numa fila separada.
   - No Kaggle: só execução em lote, privada, sem túnel e sem interface.
-  - Depois do Wan, o notebook refina o rosto com o FaceFusion 3.9.1 (commit fixo em `Config`),
-    usando as fotos de `faces/` do pacote (ou a referência). Se falhar, entrega o vídeo do Wan e
-    registra um aviso no relatório.
+  - O notebook entrega `resultado.mp4` composto sobre o vídeo original, no tamanho da geração.
+  - **Nada de FaceFusion nem outra ferramenta de troca de rosto no Kaggle.** O Kaggle bloqueia
+    ("FaceFusion and similar are blocked", 08/2026), cancela a sessão sem erro e pode banir a
+    conta. Não contorne o bloqueio. Há um teste que falha se o notebook citar o FaceFusion no
+    código.
+  - O refino do rosto roda no motor (`engine/studio/face_refine.py`): FaceFusion 3.9.1 na CPU,
+    instalado pelo `setup.sh` em `engine/.vendor/facefusion`, tarefa `face_refine` disparada
+    sozinha depois de importar o resultado. Usa as fotos de `faces/` (ou a referência), troca só
+    dentro da máscara e grava `wan_final.mp4` em 1080x1920 com o áudio.

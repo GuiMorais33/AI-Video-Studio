@@ -83,8 +83,9 @@ class Config:
     mask_kernel: int = 7
     mask_iterations: int = 3
     mask_block: int = 16
-    # Refino do rosto (FaceFusion 3.9.1), padrão: o rosto final fica igual ao das fotos.
-    face_refine: bool = True
+    # Refino do rosto (FaceFusion 3.9.1): DESLIGADO. O Kaggle bloqueia o FaceFusion e ferramentas
+    # parecidas (cancela a sessão e pode banir a conta); o refino vai para o computador do usuário.
+    face_refine: bool = False
     facefusion_git: str = "https://github.com/facefusion/facefusion.git"
     facefusion_commit: str = "72470819a0373be3388b3929c8f8f311f418fc3c"  # tag 3.9.1
     facefusion_dir: str | None = None  # clone local já existente (testes)
@@ -100,7 +101,7 @@ class Config:
     # a resolução dobra com Real-ESRGAN e o vídeo sai no tamanho dos Reels.
     composite_background: bool = True
     composite_feather: int = 6
-    upscale: bool = True
+    upscale: bool = False  # também roda pelo FaceFusion
     upscale_model: str = "real_esrgan_x2"
     upscale_factor: int = 2
     upscale_blend: int = 80

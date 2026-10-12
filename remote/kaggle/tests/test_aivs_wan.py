@@ -349,6 +349,8 @@ def fake_facefusion(tmp_path) -> Path:
 
 def _config(tmp_path: Path, tiny: dict, wan_dir: Path, input_root: Path, pose: Path, **kw) -> aivs_wan.Config:
     kw.setdefault("facefusion_dir", str(tmp_path / "facefusion"))
+    kw.setdefault("face_refine", True)
+    kw.setdefault("upscale", True)
     return aivs_wan.Config(
         repo=str(tiny["repo"]), gguf_file=str(tiny["gguf"]),
         loras=((str(tiny["lightx2v"]), "lightx2v", 1.0, True), (str(tiny["relight"]), "relight", 1.0, False)),

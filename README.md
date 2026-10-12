@@ -106,10 +106,12 @@ Clone em `~/`, não em `/mnt/c/...`: o disco do Windows visto pelo WSL é bem ma
 6. **Personagem (Kaggle):**
    - envie a foto de corpo inteiro (sua ou do personagem criado no ChatGPT) e, se quiser,
      descreva-o em inglês (roupa, cores, materiais);
-   - envie de 3 a 6 **fotos do rosto** (de frente, meio perfil, sorrindo): no fim, o rosto do vídeo
-     é trocado pelo delas (FaceFusion), para ficar igual à pessoa;
+   - envie de 3 a 6 **fotos do rosto** (de frente, meio perfil, sorrindo);
    - clique em **Gerar pacote para o Kaggle** e depois em **Gerar no Kaggle**;
-   - o resultado volta com o áudio original e um comparativo lado a lado.
+   - quando o vídeo volta, o estúdio troca o rosto pelo das fotos **no seu computador** (FaceFusion,
+     na CPU; o Kaggle bloqueia ferramentas de troca de rosto) e entrega o vídeo em 1080×1920 com o
+     áudio original e um comparativo lado a lado;
+   - trocou as fotos do rosto? **Refazer o refino do rosto**, sem gerar no Kaggle de novo.
 
    Passo a passo e modo manual em [docs/KAGGLE.md](docs/KAGGLE.md).
 

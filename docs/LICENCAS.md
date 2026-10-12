@@ -19,19 +19,23 @@ marcados como **Não** precisariam ser trocados ou licenciados. Isto não é aco
 | YOLOv10 (detector do pré-processamento oficial) | AGPL-3.0 | Evitado | Não precisamos: a caixa da pessoa vem da máscara do SAM 2.1, que acerta mais |
 | ComfyUI | GPL-3.0 | Sim, como ferramenta | Não usado |
 
-## Refino do rosto (FaceFusion 3.9.1, padrão no notebook)
+## Refino do rosto (FaceFusion 3.9.1, padrão, roda no computador)
+
+O Kaggle bloqueia o FaceFusion e ferramentas parecidas (resposta da equipe do Kaggle em 18/08/2026,
+tópico 735585 do fórum Product Feedback). Por isso ele roda só no computador do usuário, nunca no
+notebook.
 
 | Componente | Licença | Uso comercial | Papel |
 |---|---|---|---|
-| FaceFusion (código) | OpenRAIL-AS | Com restrições de uso | Roda em lote no Kaggle, versão fixa (commit `72470819`) |
+| FaceFusion (código) | OpenRAIL-AS | Com restrições de uso | Roda no computador, na CPU, versão fixa (commit `72470819`), instalado pelo `scripts/setup.sh` |
 | hyperswap_1a_256 | ResearchRAIL | **Não** | Troca o rosto (256 px, com reforço de detalhe 512) |
 | arcface_w600k_r50 (InsightFace) | Não comercial | **Não** | Lê a identidade das fotos; todos os trocadores dependem dele |
 | gfpgan_1.4 | Apache-2.0 | Sim | Restaura a nitidez do rosto |
 | yolo_face, xseg_1 | GPL-3.0 | Sim, como ferramenta | Detecta o rosto e o que está na frente dele (mãos, cabelo) |
 | 2dfan4, fan_68_5, bisenet, fairface | Conferir | A confirmar | Pontos do rosto e análise |
 | Filtro de conteúdo (nsfw_1/2/3) | Apache-2.0 / MIT | Sim | Embutido no FaceFusion e **mantido ligado**: barra só conteúdo adulto |
-| inswapper_128, alphaface_256 (alternativas) | Não comercial | **Não** | Trocadores alternativos (`cfg.face_swapper_model`) |
-| codeformer, gpen_bfr (alternativas) | Não comercial | **Não** | Restauradores alternativos (`cfg.face_enhancer_model`) |
+| inswapper_128, alphaface_256 (alternativas) | Não comercial | **Não** | Trocadores alternativos (não usados) |
+| codeformer, gpen_bfr (alternativas) | Não comercial | **Não** | Restauradores alternativos (não usados) |
 
 ## Pessoas e plataformas
 

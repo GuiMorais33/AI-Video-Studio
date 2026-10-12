@@ -28,11 +28,15 @@ permitido. Na etapa 4, o estúdio mostra quantas horas você já usou na semana.
    - roda o notebook privado `ai-video-studio-wan-animate` na T4;
    - mostra o andamento (download dos modelos, pose, geração);
    - baixa `resultado.mp4` e importa sozinho.
-3. O resultado aparece na etapa 4:
-   - `wan_final.mp4`: o personagem com o áudio original;
+3. Logo em seguida, **aqui no seu computador**, o estúdio troca o rosto pelo das suas fotos
+   (veja [Refino do rosto](#refino-do-rosto-no-seu-computador)).
+4. O resultado aparece na etapa 4:
+   - `wan_final.mp4`: o vídeo final em 1080×1920 (em pé), com o áudio original;
    - `comparativo.mp4`: antes e depois lado a lado.
 
-Pode deixar a página fechada enquanto roda. Só um notebook por vez.
+Pode deixar a página fechada enquanto roda, mas o estúdio precisa continuar aberto no computador.
+Só um notebook por vez: se ele já estiver rodando (por exemplo, disparado de outro computador
+com o mesmo token), o estúdio avisa e não envia outro.
 
 ## Modo manual
 
@@ -46,7 +50,7 @@ Pode deixar a página fechada enquanto roda. Só um notebook por vez.
    - **Add Input:** o dataset do passo 2.
 5. Clique em **Save Version → Save & Run All**.
 6. Quando terminar, abra a aba **Output**, baixe `resultado.mp4` e importe no estúdio
-   (etapa 4 → **Importar resultado**).
+   (etapa 4 → **Importar resultado**). O refino do rosto começa sozinho depois da importação.
 
 ## O que o notebook faz
 
@@ -58,23 +62,49 @@ Pode deixar a página fechada enquanto roda. Só um notebook por vez.
 | Texto | umT5 em fp16; depois é liberado da memória |
 | Geração | `WanAnimatePipeline` do diffusers 0.41.0 com: transformer GGUF Q4_K_M, LoRA lightx2v (6 passos), LoRA de reiluminação, offload em blocos, fp16 |
 | Composição | O personagem gerado é colado sobre o vídeo **original**, só dentro da máscara e com borda suave: o fundo fica intacto (o Wan redesenha o quadro inteiro e o fundo sairia levemente diferente) |
-| Refino do rosto | FaceFusion 3.9.1 na 2ª T4: troca o rosto principal de cada quadro pelo das **fotos do rosto** (hyperswap, reforço de detalhe 512, todas as fotos combinadas) e restaura a nitidez (GFPGAN), respeitando mãos e cabelo na frente do rosto. O FaceFusion só vê o personagem (fora da máscara fica preto), então não troca o rosto de outra pessoa do fundo; o resultado volta a ser colado só dentro da máscara |
-| Nitidez e tamanho | Real-ESRGAN 2× (pelo FaceFusion) e ajuste final ao tamanho dos Reels: **1080×1920** em pé, 1920×1080 deitado |
-| Saída | `resultado.mp4` (pronto), `relatorio.json` (tempos, VRAM, avisos, erro) e prévias em `depuracao/`: `wan_bruto.mp4` (o Wan puro), `wan_sem_refino.mp4` (composto, antes do rosto) e os logs do FaceFusion |
+| Saída | `resultado.mp4` (composto, no tamanho da geração, ex.: 464×832), `relatorio.json` (tempos, VRAM, avisos, erro) e prévias em `depuracao/`: `wan_bruto.mp4` (o Wan puro), pose, rosto e máscara |
 
-Cada etapa do acabamento parte do vídeo anterior: se uma falhar, o resultado segue sem ela, com aviso.
-Logo depois da composição já existe um `resultado.mp4` provisório, então uma queda no acabamento
-não perde a geração.
+O notebook **não** troca o rosto: isso é feito no seu computador, logo depois (próxima seção).
 
-O refino é o padrão. Ele fica de fora, com aviso no relatório, quando:
+Depois de trocar a imagem do personagem, **gere o pacote de novo**: o botão "Gerar no Kaggle" fica
+bloqueado enquanto o pacote estiver desatualizado. As fotos do rosto não vão para o Kaggle.
+
+## Refino do rosto no seu computador
+
+O Kaggle **bloqueia o FaceFusion e ferramentas parecidas de troca de rosto**. Um funcionário do
+Kaggle confirmou em 18/08/2026 (["FaceFusion and similar are blocked"](https://www.kaggle.com/discussions/product-feedback/735585)):
+a sessão é encerrada por fora, sem erro, e aparece como `cancel_acknowledged`. A revisão automática
+do Kaggle também pode banir a conta por "Resource abuse". Por isso o refino roda no estúdio, no seu
+computador, e nunca no Kaggle.
+
+Assim que o vídeo do Kaggle é importado, o estúdio começa o refino sozinho:
+
+1. só o personagem vai para o FaceFusion 3.9.1 (fora da máscara fica preto), então ninguém do fundo
+   tem o rosto trocado;
+2. o rosto de cada quadro vira o das **fotos do rosto** (hyperswap com reforço de detalhe 512, todas
+   as fotos combinadas numa identidade) e a nitidez é restaurada (GFPGAN), respeitando mãos e cabelo
+   na frente do rosto;
+3. o rosto refinado é colado de volta só dentro da máscara, com borda suave;
+4. o vídeo vai para o tamanho dos Reels (**1080×1920** em pé, 1920×1080 deitado) e recebe o áudio
+   original.
+
+Enquanto o refino roda, `wan_final.mp4` já existe sem ele. Quando termina, o arquivo é trocado pela
+versão refinada.
+
+- **Tempo:** roda na CPU, então é mais lento que o Kaggle: cerca de 10 min para 5 s de vídeo (77
+  quadros) num processador de 4 núcleos, mais em notebooks mais simples.
+- **Primeira vez:** baixa cerca de 1,7 GB de modelos do FaceFusion (do GitHub).
+- **Trocou as fotos do rosto?** Clique em **Refazer o refino do rosto**. Não precisa gerar no Kaggle
+  de novo.
+
+O refino fica de fora, com aviso na etapa 4 e o vídeo sem ele, quando:
 - as fotos não têm um rosto humano detectável (personagem robô, de capacete);
 - o filtro de conteúdo adulto do FaceFusion barra o vídeo. Esse filtro fica ligado e não pega vídeo
   comum: no vídeo de dança dos testes, nenhum quadro foi marcado;
-- uma etapa do FaceFusion passa de 30 min (ex.: download de modelo travado). O processo é encerrado
-  e o vídeo segue sem ela.
+- o FaceFusion passa 20 min sem dar sinal de vida (ex.: download de modelo travado). O processo é
+  encerrado.
 
-Depois de trocar a imagem do personagem ou as fotos do rosto, **gere o pacote de novo**: o botão
-"Gerar no Kaggle" fica bloqueado enquanto o pacote estiver desatualizado.
+O log completo fica em `data/projects/<projeto>/exports/facefusion_rosto.log`.
 
 **Downloads por sessão: cerca de 30 GB.** Ficam em `/kaggle/tmp`, não na saída.
 
@@ -84,7 +114,6 @@ Depois de trocar a imagem do personagem ou as fotos do rosto, **gere o pacote de
 | umT5 + CLIP + VAE (repositório diffusers oficial) | ~13 GB |
 | ViTPose-H wholebody (repositório oficial) | ~2,5 GB |
 | LoRAs (lightx2v + relight, Kijai) | ~1 GB |
-| FaceFusion (hyperswap, GFPGAN, Real-ESRGAN, detectores, filtro de conteúdo) | ~1,9 GB |
 
 **Tempo medido numa T4 (09/10/2026):** 34 min para um clipe de 4,8 s a 16 fps (77 quadros,
 464×832). Com as 30 h semanais, dá para uns 50 clipes por semana.
@@ -131,13 +160,17 @@ O estúdio mostra o erro do `relatorio.json`. Os mais comuns:
 | `CUDA out of memory` | Gere o pacote com **16 fps** e um trecho menor (3 s) |
 | `NaN` na geração | No notebook, use `cfg.dtype = "float32"` (bem mais lento) |
 | LoRA opcional ignorada | Aviso, não erro: gera sem reiluminação |
-| Refino do rosto não aplicado | Aviso, não erro: o motivo está no relatório e o log em `depuracao/facefusion.log` |
+| O Kaggle cancelou a execução (`cancel_acknowledged`) | Não é erro do notebook. Alguém clicou em Cancel/Stop session no kaggle.com, ou o próprio Kaggle parou a sessão (limite de tempo ou ferramenta bloqueada). A mensagem mostra a última etapa e o motivo, quando o Kaggle informa |
+| Já há uma execução deste notebook rodando | Espere terminar (talvez tenha sido disparada de outro computador) ou pare em kaggle.com |
+| Refino do rosto não aplicado | Aviso, não erro: o motivo aparece na etapa 4 e o log fica em `exports/facefusion_rosto.log` |
 
 ## Regras para não perder a conta
 
 - Notebook e dataset **privados**.
 - Só conteúdo apropriado: o Kaggle tem detector automático de conteúdo adulto e bane.
 - Nada de túneis (ngrok, cloudflared), SSH ou interfaces web.
+- **Nada de FaceFusion ou outras ferramentas de troca de rosto no Kaggle:** são bloqueadas e podem
+  levar ao banimento. O estúdio faz essa parte no seu computador.
 - Use apenas vídeos e rostos seus ou com autorização.
 
 ## O que já foi testado e o que falta
@@ -150,7 +183,11 @@ de pacotes da imagem do Kaggle, memória da GPU e uso das duas T4).
 Testado também aqui, na CPU, com modelos minúsculos no mesmo formato dos reais: o fluxo inteiro do
 notebook, o GGUF, as LoRAs, o ViTPose e a automação com a API do Kaggle simulada.
 
+Em 10/2026, a primeira execução com o FaceFusion no notebook terminou cancelada pelo Kaggle, sem
+erro, como acontece com ferramentas de troca de rosto bloqueadas. O FaceFusion saiu do notebook e o
+refino passou para o computador.
+
 Falta:
 
-- rodar com um vídeo seu e um personagem do ChatGPT, pelo botão do estúdio no seu PC;
+- rodar com um vídeo seu e as suas fotos, pelo botão do estúdio no seu PC, com o refino local;
 - avaliar se 4 passos (mais rápido) mantêm a qualidade.

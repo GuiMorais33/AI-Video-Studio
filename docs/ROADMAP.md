@@ -5,7 +5,8 @@ real**. Orçamento: R$ 0, sem API paga automática.
 
 A ordem abaixo já incorpora a [avaliação do plano original](AVALIACAO-DO-PLANO.md). As mudanças em
 relação ao plano original são duas. O teste do Wan Animate veio para a Fase 3. A troca facial
-(FaceFusion) virou opcional.
+(FaceFusion) virou o refino do rosto (3b), que roda no computador: o Kaggle bloqueia ferramentas de
+troca de rosto.
 
 | Fase | Entrega | Critério de conclusão | Status |
 |---|---|---|---|
@@ -13,9 +14,9 @@ relação ao plano original são duas. O teste do Wan Animate veio para a Fase 3
 | 2. SAM 2.1 | Selecionar pessoa com clique, rastrear, corrigir, exportar prévia | Rastrear uma pessoa por 5 s e corrigir as máscaras, com vídeo real | **Validada com pesos reais em 2 vídeos reais** (ver abaixo); vale repetir com um vídeo seu |
 | 3. Teste do Wan Animate | Notebook Kaggle que roda o Wan 2.2 Animate (replace) com diffusers, usando nossas máscaras ([guia](KAGGLE.md)) | Um clipe de 3–5 s com personagem substituído, gerado sem custo; tempo e qualidade anotados | **Concluída em 09/10/2026:** clipe de 4,8 s gerado numa T4 grátis em 34 min, com vídeo real (ver abaixo) |
 | 4. Integração | Envio do clipe + máscara + referência do ChatGPT para o Kaggle e retorno do resultado ao estúdio | Fluxo de ponta a ponta disparado pelo estúdio | **Funcionou de ponta a ponta pelo motor** (mesmas funções do botão, 4 execuções reais); falta disparar pelo botão no seu PC com um vídeo seu |
-| 5. Refinamento | Composição com bordas suaves, ajuste de cor, upscale para 1080×1920, áudio original | Vídeo final pronto para Reels com comparativo antes/depois | **Parcial:** composição sobre o original, Real-ESRGAN 2× e 1080×1920 implementados e testados na CPU com as ferramentas reais; falta testar na T4, interpolação para 30 fps e ajuste de cor |
+| 5. Refinamento | Composição com bordas suaves, ajuste de cor, upscale para 1080×1920, áudio original | Vídeo final pronto para Reels com comparativo antes/depois | **Parcial:** composição sobre o original (no Kaggle) e 1080×1920 com áudio (no computador) implementados; o Real-ESRGAN saiu porque rodava pelo FaceFusion, bloqueado no Kaggle. Falta upscale por IA, interpolação para 30 fps e ajuste de cor |
 | 6. Interface definitiva | Biblioteca de personagens, histórico, fila de gerações | Fluxo aprovado executado só pela interface | A fazer |
-| 3b. Refino do rosto | FaceFusion 3.9.1 depois do Wan, com várias fotos do rosto; padrão no notebook | Rosto final reconhecível como a pessoa das fotos, num vídeo real | Implementado e testado na CPU com os modelos reais; **falta a execução na T4** |
+| 3b. Refino do rosto | FaceFusion 3.9.1 depois do Wan, com várias fotos do rosto; padrão, **no computador** (o Kaggle cancelou a sessão com FaceFusion: ferramentas de troca de rosto são bloqueadas lá) | Rosto final reconhecível como a pessoa das fotos, num vídeo real | Implementado no motor e testado na CPU com os modelos reais; falta um vídeo seu do começo ao fim |
 
 ## Fase 2 — como validar com vídeo real
 
