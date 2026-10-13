@@ -180,6 +180,8 @@ Start-Job -ScriptBlock {
     }
 } | Out-Null
 Write-Host "AI Video Studio rodando. Feche esta janela (ou Ctrl+C) para encerrar."
+Write-Host "O navegador abre sozinho em http://localhost:3000 quando o estudio estiver pronto (1 a 2 minutos)."
+Write-Host "Se aparecer 'Failed to start the systemd user session', e so um aviso do WSL: pode ignorar."
 & wsl.exe -d $Distro -e bash -lc "cd ~/AI-Video-Studio && bash scripts/start.sh"
 '@
 Set-Content -Path $launcher -Value $launcherBody.Replace("__DISTRO__", $Distro) -Encoding ASCII

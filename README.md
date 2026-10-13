@@ -79,6 +79,10 @@ O instalador:
 
 Pode rodar o instalador de novo a qualquer momento: ele continua de onde parou e atualiza o projeto.
 
+**Aviso "wsl: Failed to start the systemd user session".** É um problema conhecido de versões
+recentes do WSL, não do estúdio: o estúdio abre mesmo assim, só um pouco mais devagar. Para o aviso
+sumir, rode no PowerShell `wsl --update` e depois `wsl --shutdown`, e abra o atalho de novo.
+
 **Diagnóstico sem instalar nada.** Com o projeto baixado, rode no PowerShell:
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\diagnose.ps1
