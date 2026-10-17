@@ -6,13 +6,16 @@ a troca do rosto saiu do notebook e roda aqui, num processo à parte com o Pytho
 
 1. As máscaras do pacote passam pelo mesmo processamento do notebook (dilatação 7x7 x3 e blocos
    de 16) e são ajustadas ao tamanho do vídeo (escala para cobrir + recorte central).
-2. Só o personagem vai para o FaceFusion (fora da máscara, preto): ninguém do fundo tem o rosto
-   trocado e o maior rosto que sobra é sempre o do personagem.
+2. Só a área do personagem vai para o FaceFusion (fora da máscara, preto). Ele troca todos os
+   rostos que achar ali, e só volta para o vídeo o que cai na silhueta da pessoa rastreada: quem
+   está colado nela (ao lado, atrás) nunca tem o rosto trocado, e o do personagem nunca perde a
+   vez para um rosto maior.
 3. O FaceFusion troca o rosto pelo das fotos (hyperswap) e restaura a nitidez (GFPGAN). O filtro
    de conteúdo dele fica sempre ligado.
-4. Só a região que o FaceFusion mudou (o rosto) volta para o vídeo, com borda suave e dentro da
-   máscara; o resto do quadro continua o do Wan, sem a recompressão do FaceFusion. O acabamento
-   (tamanho dos Reels, áudio original, comparativo) é refeito.
+4. Só a região que o FaceFusion mudou (o rosto) e que cai na silhueta da pessoa rastreada volta
+   para o vídeo, com borda suave e estável entre quadros vizinhos; o resto do quadro continua o do
+   Wan, sem a recompressão do FaceFusion. O acabamento (tamanho dos Reels, áudio original,
+   comparativo) é refeito.
 
 Se o FaceFusion não conseguir (foto sem rosto humano, filtro de conteúdo, travou), o wan_final.mp4
 fica sem o refino e a tarefa termina com um aviso.
@@ -60,6 +63,12 @@ COMPOSITE_FEATHER = 6
 CHANGE_THRESHOLD = 10
 # Quanto a região do rosto cresce antes da borda suave (pixels no tamanho da geração).
 FACE_GROW = 8
+# Folga em volta da silhueta da pessoa rastreada (máscara do SAM 2, sem os blocos da geração): só
+# ali o rosto trocado volta para o vídeo. Quem está ao lado ou atrás fica intacto.
+PERSON_MARGIN = 4
+# Quadros vizinhos (para cada lado) que o rastreador de rostos do FaceFusion usa para preencher um
+# rosto que o detector perdeu num quadro (sem isso, o rosto troca e destroca: pisca).
+TRACK_WINDOW = 4
 # Modelos principais: sem eles, o 1º refino baixa ~1,7 GB.
 MODEL_FILES = ("hyperswap_1a_256.onnx", "gfpgan_1.4.onnx")
 RESULT_FILE = "face_refine.json"
@@ -232,9 +241,13 @@ class PackageMasks:
         """Área do personagem (bool, altura x largura)."""
         return np.asarray(fit_cover(self._processed(idx), self.size, Image.Resampling.NEAREST)) > 127
 
-    def alpha(self, idx: int) -> np.ndarray:
-        """Máscara 0..1 com a borda esfumada (altura x largura x 1), para colar sem emenda."""
-        soft = self._processed(idx).filter(ImageFilter.GaussianBlur(COMPOSITE_FEATHER))
+    def person(self, idx: int) -> np.ndarray:
+        """Silhueta da pessoa rastreada com uma folga pequena, 0..1 com borda suave (altura x
+        largura x 1). Sem os blocos da geração: não pega quem está ao lado ou atrás."""
+        with Image.open(io.BytesIO(self._zip.read(f"masks/{idx:05d}.png"))) as img:
+            mask = np.asarray(img.convert("L")) > 127
+        grown = dilate(mask, 2 * PERSON_MARGIN + 1, 1)
+        soft = Image.fromarray(grown.astype(np.uint8) * 255).filter(ImageFilter.GaussianBlur(PERSON_MARGIN / 2))
         return np.asarray(fit_cover(soft, self.size, Image.Resampling.BILINEAR), np.float32)[..., None] / 255.0
 
     def close(self) -> None:
@@ -277,9 +290,11 @@ def facefusion_command(settings: Settings, sources: list[Path], target: Path, ou
         "--face-enhancer-blend", str(FACE_ENHANCER_BLEND),
         "--face-detector-model", "yolo_face", "--face-detector-size", "640x640", "--face-detector-score", "0.5",
         "--face-landmarker-model", "2dfan4", "--face-landmarker-score", "0.5",
-        # Só o rosto maior de cada quadro: o personagem (o fundo já chega apagado).
-        "--face-selector-mode", "one", "--face-selector-order", "large-small",
-        "--face-tracker-score", "0.3", "--target-frame-amount", "2",
+        # Todos os rostos da área do personagem: quem fica é decidido na colagem (só a pessoa
+        # rastreada). Com "one", um rosto maior colado nela roubava a vez do personagem.
+        "--face-selector-mode", "many", "--face-selector-order", "large-small",
+        # Rastreador: um rosto que o detector perde por alguns quadros é preenchido pelos vizinhos.
+        "--face-tracker-score", "0.3", "--target-frame-amount", str(TRACK_WINDOW),
         # Caixa + oclusão: mantém o rosto inteiro e respeita mãos e cabelo na frente.
         "--face-mask-types", "box", "occlusion", "--face-occluder-model", "xseg_1",
         "--face-mask-blur", "0.3", "--face-mask-padding", "0",
@@ -442,10 +457,25 @@ def write_target(result: Path, masks: PackageMasks, target: Path, info: media.Vi
 def paste_back(result: Path, refined: Path, masks: PackageMasks, output: Path, info: media.VideoInfo,
                size: tuple[int, int], frames: int, progress: Callable[[float], None],
                stop: threading.Event | None) -> bool:
-    """Rosto refinado só onde o FaceFusion mudou o quadro e dentro da máscara (borda suave); no
-    resto, o resultado do Wan intacto. False se o FaceFusion devolveu outro número de quadros."""
+    """Rosto refinado só onde o FaceFusion mudou o quadro e dentro da silhueta da pessoa rastreada
+    (borda suave); no resto, o resultado do Wan intacto. False se o FaceFusion devolveu outro
+    número de quadros.
+
+    A área colada de cada quadro vale também para os vizinhos (máximo de 3 quadros seguidos): a
+    borda do rosto não treme de um quadro para o outro."""
     width, height = size
     writer = media.FrameWriter(output, width, height, info.fps, crf=12)
+    Entry = tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]  # (base, rosto, mudou, pessoa)
+
+    def write(previous: Entry | None, current: Entry, following: Entry | None) -> None:
+        base, face, _, person = current
+        changed = np.maximum.reduce([e[2] for e in (previous, current, following) if e is not None])
+        alpha = person * changed
+        mixed = alpha * face.astype(np.float32) + (1.0 - alpha) * base.astype(np.float32)
+        writer.write(np.clip(mixed, 0, 255).round().astype(np.uint8))
+
+    previous: Entry | None = None
+    current: Entry | None = None
     count = 0
     try:
         with media.FrameReader(result, info.width, info.height) as base_reader, \
@@ -458,11 +488,14 @@ def paste_back(result: Path, refined: Path, masks: PackageMasks, output: Path, i
                 base = _even(base, width, height)
                 # Fora da máscara o FaceFusion só viu preto: ali vale o quadro do Wan, sem escurecer a borda.
                 face = np.where(masks.binary(count)[..., None], face, base)
-                alpha = masks.alpha(count) * face_alpha(face, base, masks.scale)
-                mixed = alpha * face.astype(np.float32) + (1.0 - alpha) * base.astype(np.float32)
-                writer.write(np.clip(mixed, 0, 255).round().astype(np.uint8))
+                entry = (base, face, face_alpha(face, base, masks.scale), masks.person(count))
                 count += 1
-                progress(count / frames)
+                if current is not None:  # o anterior já tem os dois vizinhos
+                    write(previous, current, entry)
+                    progress((count - 1) / frames)
+                previous, current = current, entry
+            if count == frames and current is not None:
+                write(previous, current, None)
     except BaseException:
         writer.abort()
         raise
