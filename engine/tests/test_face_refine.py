@@ -56,10 +56,10 @@ sys.stdout.flush()
 # Modo face: como o real, só muda o rosto (um quadrado no centro) e recomprime o resto do alvo.
 # FAKE_FACEFUSION_NEIGHBOR="x:y:l:a": troca também o rosto de quem está colado no personagem.
 effect = "drawbox=x=iw/2-24:y=ih/2-24:w=48:h=48:color=red:t=fill" if mode == "face" else "negate"
-if mode == "face" and os.environ.get("FAKE_FACEFUSION_NEIGHBOR"):
+if mode == "face" and os.environ.get("FAKE_FACEFUSION_NEIGHBOR"):  # o "rosto" vizinho: cores invertidas
     x, y, w, h = os.environ["FAKE_FACEFUSION_NEIGHBOR"].split(":")
-    effect += f",drawbox=x={x}:y={y}:w={w}:h={h}:color=blue:t=fill"
-subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", value("-t"), "-vf", effect, "-c:v", "libx264",
+    effect = f"{effect},split[a][b];[b]crop={w}:{h}:{x}:{y},negate[c];[a][c]overlay={x}:{y}"
+subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", value("-t"), "-filter_complex", effect, "-c:v", "libx264",
                 "-pix_fmt", "yuv420p", value("-o")], check=True)
 '''
 
@@ -261,9 +261,11 @@ def test_only_the_face_is_pasted_back(ff_settings, monkeypatch, tmp_path):
     assert (diff[around] > 20).mean() < 0.001, "o final mudou fora do rosto (borda da máscara?)"
 
 
-def test_neighbor_faces_are_never_pasted(ff_settings, monkeypatch, tmp_path):
+@pytest.mark.parametrize("touching", [False, True])
+def test_neighbor_faces_are_never_pasted(ff_settings, monkeypatch, tmp_path, touching):
     """Quem está colado no personagem cai na área em blocos que o FaceFusion vê e tem o rosto trocado
-    lá; no vídeo final só volta o que está na silhueta da pessoa rastreada."""
+    lá; no vídeo final só volta o que está na silhueta da pessoa rastreada. Encostado nela (ex.: a
+    mão do personagem no rosto de outra pessoa), o rosto vizinho fica de fora inteiro."""
     settings = dataclasses.replace(ff_settings, face_refine_auto=False)
     with TestClient(create_app(settings)) as client:
         pid = _portrait_project(client, tmp_path, faces=0)
@@ -272,9 +274,14 @@ def test_neighbor_faces_are_never_pasted(ff_settings, monkeypatch, tmp_path):
         masks = face_refine.PackageMasks(root / "exports" / "wan_package.zip", (464, 832))
         area, person = masks.binary(5), masks.person(5)[..., 0]
         masks.close()
-        # Um "rosto" de 12x12 na área que o FaceFusion vê, fora da silhueta da pessoa.
-        spots = [(x, y) for y in range(0, 820, 4) for x in range(0, 452, 4)
-                 if area[y:y + 12, x:x + 12].all() and person[y:y + 12, x:x + 12].max() < 0.01]
+        # Um "rosto" de 12x12 na área que o FaceFusion vê: fora da silhueta, ou encostado nela
+        # (um quarto dentro).
+        def place(x, y):
+            box = person[y:y + 12, x:x + 12]
+            if not area[y:y + 12, x:x + 12].all():
+                return False
+            return 0.15 < (box > 0.5).mean() < 0.35 if touching else box.max() < 0.01
+        spots = [(x, y) for y in range(0, 820, 2) for x in range(0, 452, 2) if place(x, y)]
         assert spots, "a área em blocos deveria ir além da silhueta"
         x, y = spots[len(spots) // 2]
         monkeypatch.setenv("FAKE_FACEFUSION_MODE", "face")
@@ -288,8 +295,8 @@ def test_neighbor_faces_are_never_pasted(ff_settings, monkeypatch, tmp_path):
     assert got[face][..., 0].mean() > 200  # o rosto do personagem foi trocado
     scale = 1080 / 464  # o final é o pacote ampliado (e cortado ~8 px em cima)
     top, left = int(y * scale - 8), int(x * scale)
-    neighbor = (slice(top + 6, top + 22), slice(left + 6, left + 22))
-    assert _diff(got[neighbor], plain[neighbor]) < 6, "o rosto do vizinho voltou para o vídeo"
+    neighbor = (slice(top + 2, top + 26), slice(left + 2, left + 26))
+    assert np.abs(got[neighbor] - plain[neighbor]).mean(axis=2).max() < 40, "o rosto do vizinho voltou para o vídeo"
 
 
 def test_face_alpha_follows_what_changed():

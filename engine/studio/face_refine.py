@@ -254,9 +254,40 @@ class PackageMasks:
         self._zip.close()
 
 
-def face_alpha(face: np.ndarray, base: np.ndarray, scale: float = 1.0) -> np.ndarray:
+def keep_inside(changed: np.ndarray, person: np.ndarray, cell: int) -> np.ndarray:
+    """Só os rostos trocados que ficam na maior parte dentro da pessoa rastreada (bool).
+
+    Quando a mão ou o braço do personagem encosta no rosto de outra pessoa, o rosto dela entra na
+    área do FaceFusion e é trocado lá; ele inteiro fica de fora, não só a parte longe da mão."""
+    h, w = changed.shape
+    ph, pw = -h % cell, -w % cell
+    count = np.pad(changed, ((0, ph), (0, pw))).reshape((h + ph) // cell, cell, (w + pw) // cell, cell).sum(axis=(1, 3))
+    inside = np.pad(changed & person, ((0, ph), (0, pw))).reshape(count.shape[0], cell, count.shape[1], cell).sum(axis=(1, 3))
+    keep = np.zeros(count.shape, bool)
+    seen = np.zeros(count.shape, bool)
+    for start in zip(*np.nonzero(count)):
+        if seen[start]:
+            continue
+        group, stack = [], [start]
+        seen[start] = True
+        while stack:  # blocos vizinhos (8 direções) com mudança formam um rosto
+            y, x = stack.pop()
+            group.append((y, x))
+            for ny in range(max(0, y - 1), min(count.shape[0], y + 2)):
+                for nx in range(max(0, x - 1), min(count.shape[1], x + 2)):
+                    if count[ny, nx] and not seen[ny, nx]:
+                        seen[ny, nx] = True
+                        stack.append((ny, nx))
+        ys, xs = zip(*group)
+        if inside[ys, xs].sum() * 2 >= count[ys, xs].sum():
+            keep[ys, xs] = True
+    return changed & np.kron(keep, np.ones((cell, cell), bool))[:h, :w]
+
+
+def face_alpha(face: np.ndarray, base: np.ndarray, scale: float = 1.0, person: np.ndarray | None = None) -> np.ndarray:
     """Região que o FaceFusion realmente mudou (o rosto trocado), 0..1 com borda suave
-    (altura x largura x 1). Zero quando ele não achou rosto no quadro.
+    (altura x largura x 1). Zero quando ele não achou rosto no quadro. Com `person` (bool), só
+    entram os rostos que ficam na maior parte dentro da pessoa rastreada.
 
     Fora do rosto, o vídeo dele só difere do Wan pela recompressão: colar o personagem inteiro
     deixaria uma emenda visível no contorno da máscara."""
@@ -264,6 +295,8 @@ def face_alpha(face: np.ndarray, base: np.ndarray, scale: float = 1.0) -> np.nda
     # x8 para não perder precisão no uint8 do desfoque (o limiar fica em 80 de 255).
     img = Image.fromarray(np.clip(diff * 8, 0, 255).astype(np.uint8))
     changed = np.asarray(img.filter(ImageFilter.GaussianBlur(2 * scale))) > CHANGE_THRESHOLD * 8
+    if person is not None and changed.any():
+        changed = keep_inside(changed, person, max(4, round(8 * scale)))
     if not changed.any():
         return np.zeros((*diff.shape, 1), np.float32)
     grown = Image.fromarray(changed.astype(np.uint8) * 255).filter(ImageFilter.GaussianBlur(FACE_GROW * scale))
@@ -488,7 +521,8 @@ def paste_back(result: Path, refined: Path, masks: PackageMasks, output: Path, i
                 base = _even(base, width, height)
                 # Fora da máscara o FaceFusion só viu preto: ali vale o quadro do Wan, sem escurecer a borda.
                 face = np.where(masks.binary(count)[..., None], face, base)
-                entry = (base, face, face_alpha(face, base, masks.scale), masks.person(count))
+                person = masks.person(count)
+                entry = (base, face, face_alpha(face, base, masks.scale, person[..., 0] > 0.5), person)
                 count += 1
                 if current is not None:  # o anterior já tem os dois vizinhos
                     write(previous, current, entry)

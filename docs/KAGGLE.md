@@ -79,12 +79,15 @@ computador, e nunca no Kaggle.
 
 Assim que o vídeo do Kaggle é importado, o estúdio começa o refino sozinho:
 
-1. só o personagem vai para o FaceFusion 3.9.1 (fora da máscara fica preto), então ninguém do fundo
-   tem o rosto trocado;
+1. só a área do personagem vai para o FaceFusion 3.9.1 (fora da máscara fica preto). Ele troca
+   todos os rostos que achar ali, mas só volta para o vídeo o rosto que fica na silhueta da pessoa
+   rastreada. Quem está ao lado ou atrás, mesmo encostado nela (ex.: a mão do entrevistador perto do
+   rosto da entrevistada), não tem o rosto trocado;
 2. o rosto de cada quadro vira o das **fotos do rosto** (hyperswap com reforço de detalhe 512, todas
    as fotos combinadas numa identidade) e a nitidez é restaurada (GFPGAN), respeitando mãos e cabelo
    na frente do rosto;
-3. o rosto refinado é colado de volta só dentro da máscara, com borda suave;
+3. o rosto refinado é colado de volta com borda suave e estável de um quadro para o outro. Se o
+   detector perde o rosto por alguns quadros, o rastreador do FaceFusion preenche com os vizinhos;
 4. o vídeo vai para o tamanho dos Reels (**1080×1920** em pé, 1920×1080 deitado) e recebe o áudio
    original.
 
