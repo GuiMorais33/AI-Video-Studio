@@ -67,8 +67,17 @@ FACE_GROW = 8
 # ali o rosto trocado volta para o vídeo. Quem está ao lado ou atrás fica intacto.
 PERSON_MARGIN = 4
 # Quadros vizinhos (para cada lado) que o rastreador de rostos do FaceFusion usa para preencher um
-# rosto que o detector perdeu num quadro (sem isso, o rosto troca e destroca: pisca).
-TRACK_WINDOW = 4
+# rosto que o detector perdeu num quadro (o padrão dele).
+TRACK_WINDOW = 2
+# De perfil ou de costas o FaceFusion estraga a troca (rachaduras no rosto, boca fora do lugar, olho
+# na bochecha): ali fica o rosto do Wan. O ângulo vem da posição do nariz entre os olhos (0,5 = de
+# frente; 0 ou 1 = três quartos, ainda bom; bem fora disso = perfil) e da confiança dos 68 pontos.
+MAX_TURN = 0.55
+MIN_LANDMARK_SCORE = 0.5
+# Trechos com troca mais curtos que isto ficam de fora (trocar e destrocar pisca); cada trecho entra
+# e sai em 3 quadros (60%, 80%, 100%).
+MIN_RUN = 3
+PROBE_SCRIPT = Path(__file__).with_name("facefusion_probe.py")
 # Modelos principais: sem eles, o 1º refino baixa ~1,7 GB.
 MODEL_FILES = ("hyperswap_1a_256.onnx", "gfpgan_1.4.onnx")
 RESULT_FILE = "face_refine.json"
@@ -487,23 +496,89 @@ def write_target(result: Path, masks: PackageMasks, target: Path, info: media.Vi
     return count
 
 
+def probe_faces(settings: Settings, video: Path, work: Path, stop: threading.Event | None) -> list[list[dict]] | None:
+    """Rostos de cada quadro medidos pelo próprio FaceFusion (facefusion_probe.py, com o Python dele).
+    None quando não deu para medir."""
+    output = work / "rostos.json"
+    command = [str(settings.facefusion_python_path), "-I", str(PROBE_SCRIPT), str(settings.facefusion_dir), str(video),
+               str(output), str(settings.facefusion_threads)]
+    try:
+        proc = subprocess.Popen(command, cwd=settings.facefusion_dir, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL, start_new_session=True)
+    except OSError:
+        return None
+    deadline = time.monotonic() + settings.facefusion_idle_timeout_s
+    while proc.poll() is None:
+        if (stop is not None and stop.is_set()) or time.monotonic() > deadline:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+            proc.wait()
+            _check_stop(stop)
+            return None
+        time.sleep(0.2)
+    try:
+        frames = json.loads(output.read_text()) if proc.returncode == 0 else None
+    except (OSError, ValueError):
+        return None
+    return frames if isinstance(frames, list) else None
+
+
+def pose_weights(faces: list[list[dict]], person: Callable[[int], np.ndarray | None], frames: int) -> list[float]:
+    """Quanto da troca entra em cada quadro (0..1): só onde o rosto da pessoa rastreada está de frente
+    até três quartos, em trechos de pelo menos MIN_RUN quadros, com entrada e saída suaves."""
+    good = []
+    for t in range(frames):
+        mask, chosen = person(t), None
+        for face in faces[t] if t < len(faces) else []:
+            x0, y0, x1, y1 = face["box"]
+            cx, cy = int((x0 + x1) / 2), int((y0 + y1) / 2)
+            inside = mask is None or (0 <= cy < mask.shape[0] and 0 <= cx < mask.shape[1] and mask[cy, cx])
+            if inside and (chosen is None or (x1 - x0) * (y1 - y0) > (chosen["box"][2] - chosen["box"][0]) * (chosen["box"][3] - chosen["box"][1])):
+                chosen = face
+        good.append(chosen is not None and chosen["landmarker"] >= MIN_LANDMARK_SCORE
+                    and abs(chosen["r5"] - 0.5) <= MAX_TURN)
+    # Um quadro ruim isolado no meio de quadros bons entra (o rastreador do FaceFusion o preenche).
+    for t in range(1, frames - 1):
+        if not good[t] and good[t - 1] and good[t + 1]:
+            good[t] = True
+    weights = [0.0] * frames
+    t = 0
+    while t < frames:
+        if not good[t]:
+            t += 1
+            continue
+        end = t
+        while end < frames and good[end]:
+            end += 1
+        if end - t >= MIN_RUN:
+            for i in range(t, end):
+                # Rampa só onde o trecho começa ou termina dentro do vídeo (não no primeiro/último quadro).
+                ramp_in = i - t if t > 0 else 2
+                ramp_out = end - 1 - i if end < frames else 2
+                weights[i] = min(1.0, 0.6 + 0.2 * min(ramp_in, ramp_out))
+        t = end
+    return weights
+
+
 def paste_back(result: Path, refined: Path, masks: PackageMasks, output: Path, info: media.VideoInfo,
                size: tuple[int, int], frames: int, progress: Callable[[float], None],
-               stop: threading.Event | None) -> bool:
+               stop: threading.Event | None, weights: list[float] | None = None) -> bool:
     """Rosto refinado só onde o FaceFusion mudou o quadro e dentro da silhueta da pessoa rastreada
-    (borda suave); no resto, o resultado do Wan intacto. False se o FaceFusion devolveu outro
-    número de quadros.
+    (borda suave), na proporção de `weights` (ângulo do rosto em cada quadro); no resto, o resultado
+    do Wan intacto. False se o FaceFusion devolveu outro número de quadros.
 
     A área colada de cada quadro vale também para os vizinhos (máximo de 3 quadros seguidos): a
     borda do rosto não treme de um quadro para o outro."""
     width, height = size
     writer = media.FrameWriter(output, width, height, info.fps, crf=12)
-    Entry = tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]  # (base, rosto, mudou, pessoa)
+    Entry = tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, int]  # (base, rosto, mudou, pessoa, quadro)
 
     def write(previous: Entry | None, current: Entry, following: Entry | None) -> None:
-        base, face, _, person = current
+        base, face, _, person, index = current
         changed = np.maximum.reduce([e[2] for e in (previous, current, following) if e is not None])
-        alpha = person * changed
+        alpha = person * changed * (1.0 if weights is None else weights[index])
         mixed = alpha * face.astype(np.float32) + (1.0 - alpha) * base.astype(np.float32)
         writer.write(np.clip(mixed, 0, 255).round().astype(np.uint8))
 
@@ -522,7 +597,7 @@ def paste_back(result: Path, refined: Path, masks: PackageMasks, output: Path, i
                 # Fora da máscara o FaceFusion só viu preto: ali vale o quadro do Wan, sem escurecer a borda.
                 face = np.where(masks.binary(count)[..., None], face, base)
                 person = masks.person(count)
-                entry = (base, face, face_alpha(face, base, masks.scale, person[..., 0] > 0.5), person)
+                entry = (base, face, face_alpha(face, base, masks.scale, person[..., 0] > 0.5), person, count)
                 count += 1
                 if current is not None:  # o anterior já tem os dois vizinhos
                     write(previous, current, entry)
@@ -638,6 +713,21 @@ def refine(project: dict[str, Any], root: Path, settings: Settings, progress: Pr
                 raise FaceRefineError(STOPPED)
             reason = failure_reason(run, settings)
             refined = face_video
+            weights: list[float] | None = None
+            if reason is None and masks is not None:
+                progress(0.885, "Conferindo o ângulo do rosto em cada quadro")
+                faces = probe_faces(settings, target, tmp, stop)
+                if faces is None:
+                    warnings.append("não deu para medir o ângulo do rosto: o refino valeu para todos os quadros")
+                else:
+                    weights = pose_weights(faces, lambda i: masks.person(i)[..., 0] > 0.5, frames)
+                    kept = sum(w > 0 for w in weights)
+                    if kept == 0:
+                        reason = ("o rosto da pessoa aparece de perfil ou de costas no vídeo todo (o FaceFusion só acerta "
+                                  "rostos de frente até três quartos)")
+                    elif kept < frames:
+                        warnings.append(f"o rosto está de perfil ou de costas em {frames - kept} de {frames} quadros: "
+                                        "ali fica o rosto gerado pelo Wan (de perfil, a troca sai estragada)")
             if reason is None and masks is not None:
                 progress(0.89, "Colando o rosto refinado no vídeo")
                 refined = tmp / "composto.mp4"
@@ -645,7 +735,7 @@ def refine(project: dict[str, Any], root: Path, settings: Settings, progress: Pr
                 if (out.width, out.height) != size:
                     reason = f"o FaceFusion devolveu o vídeo em {out.width}x{out.height} (esperado {size[0]}x{size[1]})"
                 elif not paste_back(result, face_video, masks, refined, info, size, frames,
-                                    lambda f: progress(0.89 + 0.04 * f), stop):
+                                    lambda f: progress(0.89 + 0.04 * f), stop, weights):
                     reason = f"o FaceFusion devolveu {media.count_frames(face_video)} de {frames} quadros"
             if reason is None:
                 progress(0.94, "Montando o wan_final.mp4 e o comparativo")
@@ -662,6 +752,7 @@ def refine(project: dict[str, Any], root: Path, settings: Settings, progress: Pr
     data: dict[str, Any] = {
         "ok": reason is None, "fotos": len(sources), "segundos": seconds, "quadros": frames,
         "mascara": masks is not None, "avisos": warnings, "trocador": FACE_SWAPPER_MODEL,
+        "quadros_refinados": None if weights is None else sum(w > 0 for w in weights),
         "restaurador": FACE_ENHANCER_MODEL, "provedor": "cpu", "threads": settings.facefusion_threads,
         "concluido_em": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }

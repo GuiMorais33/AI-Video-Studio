@@ -64,11 +64,40 @@ subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", value("-t"), "-filter_compl
 '''
 
 
+# Pacote falso para o facefusion_probe.py: um rosto no centro do quadro, de frente ou de perfil.
+# FAKE_FACEFUSION_POSE: "frontal" (padrão), "profile", "profile:8-15" (perfil nesses quadros) ou "crash".
+FAKE_FACE_CREATOR = r'''
+import os
+from types import SimpleNamespace
+COUNT = [0]
+
+def get_many_faces(frames):
+    index, COUNT[0] = COUNT[0], COUNT[0] + 1
+    pose = os.environ.get("FAKE_FACEFUSION_POSE", "frontal")
+    if pose == "crash":
+        raise RuntimeError("modelo ausente")
+    if ":" in pose:
+        start, end = (int(v) for v in pose.split(":")[1].split("-"))
+        pose = "profile" if start <= index <= end else "frontal"
+    h, w = frames[0].shape[:2]
+    cx, cy = w / 2, h / 2
+    nose = cx + (30 if pose == "profile" else 0)
+    return [SimpleNamespace(bounding_box=[cx - 24, cy - 24, cx + 24, cy + 24],
+                            score_set={"detector": 0.8, "landmarker": 0.9},
+                            landmark_set={"5/68": [[cx - 10, cy - 6], [cx + 10, cy - 6], [nose, cy + 4]]})]
+'''
+
+
 @pytest.fixture
 def fake_facefusion(tmp_path) -> Path:
     root = tmp_path / "facefusion"
     (root / ".venv" / "bin").mkdir(parents=True)
     (root / "facefusion.py").write_text(FAKE_FACEFUSION)
+    package = root / "facefusion"
+    package.mkdir()
+    (package / "__init__.py").write_text("")
+    (package / "state_manager.py").write_text("def init_item(key, value):\n    pass\n")
+    (package / "face_creator.py").write_text(FAKE_FACE_CREATOR)
     python = root / ".venv" / "bin" / "python"
     python.write_text(f'#!/bin/sh\nexec "{sys.executable}" "$@"\n')
     python.chmod(0o755)
@@ -297,6 +326,73 @@ def test_neighbor_faces_are_never_pasted(ff_settings, monkeypatch, tmp_path, tou
     top, left = int(y * scale - 8), int(x * scale)
     neighbor = (slice(top + 2, top + 26), slice(left + 2, left + 26))
     assert np.abs(got[neighbor] - plain[neighbor]).mean(axis=2).max() < 40, "o rosto do vizinho voltou para o vídeo"
+
+
+def test_profile_frames_keep_the_wan_face(ff_settings, monkeypatch, tmp_path):
+    """De perfil o FaceFusion estraga a troca: nesses quadros fica o rosto do Wan, com transição suave."""
+    monkeypatch.setenv("FAKE_FACEFUSION_MODE", "face")
+    monkeypatch.setenv("FAKE_FACEFUSION_POSE", "profile:8-15")
+    settings = dataclasses.replace(ff_settings, face_refine_auto=False)
+    with TestClient(create_app(settings)) as client:
+        pid = _portrait_project(client, tmp_path, faces=0)
+        _import(client, pid, _video(tmp_path / "resultado.mp4", "464x832", 16))
+        root = project_paths(settings, pid).root
+        plain = [_frame(root / "exports" / "wan_final.mp4", i) for i in (3, 7, 12)]
+        client.post(f"/projects/{pid}/face-refine")
+        client.app.state.jobs.wait_idle(timeout=120)
+        detail = client.get(f"/projects/{pid}").json()
+        got = [_frame(root / "exports" / "wan_final.mp4", i) for i in (3, 7, 12)]
+    result = detail["face_refine"]["result"]
+    assert result["ok"] is True and result["quadros_refinados"] == 8
+    assert any("perfil ou de costas em 8 de 16 quadros" in a for a in result["avisos"])
+    face = (slice(930, 990), slice(510, 570))
+    assert got[0][face][..., 0].mean() > 200  # de frente: trocado
+    assert _diff(got[2][face], plain[2][face]) < 6  # de perfil: o do Wan
+    # Último quadro de frente antes do perfil: troca pela metade (saída suave), nem inteira nem nada.
+    assert 12 < _diff(got[1][face], plain[1][face]) < _diff(got[0][face], plain[0][face]) - 12
+
+
+def test_all_profile_is_not_applied(ff_settings, monkeypatch, tmp_path):
+    monkeypatch.setenv("FAKE_FACEFUSION_MODE", "face")
+    monkeypatch.setenv("FAKE_FACEFUSION_POSE", "profile")
+    with TestClient(create_app(ff_settings)) as client:
+        pid = _portrait_project(client, tmp_path, faces=0)
+        result = _video(tmp_path / "resultado.mp4", "464x832", 16)
+        _import(client, pid, result)
+        detail = client.get(f"/projects/{pid}").json()
+        root = project_paths(ff_settings, pid).root
+        got = _frame(root / "exports" / "wan_final.mp4", 5)
+    job = detail["jobs"]["face_refine"]
+    assert job["status"] == "done" and "não aplicado" in job["message"] and "perfil ou de costas" in job["message"]
+    assert detail["face_refine"]["result"]["ok"] is False
+    assert _diff(got, _cover(_frame(result, 5), (1080, 1920))) < 12
+
+
+def test_probe_failure_refines_every_frame(ff_settings, monkeypatch, tmp_path):
+    monkeypatch.setenv("FAKE_FACEFUSION_MODE", "face")
+    monkeypatch.setenv("FAKE_FACEFUSION_POSE", "crash")
+    with TestClient(create_app(ff_settings)) as client:
+        pid = _portrait_project(client, tmp_path, faces=0)
+        _import(client, pid, _video(tmp_path / "resultado.mp4", "464x832", 16))
+        result = client.get(f"/projects/{pid}").json()["face_refine"]["result"]
+    assert result["ok"] is True and result["quadros_refinados"] is None
+    assert any("não deu para medir o ângulo do rosto" in a for a in result["avisos"])
+
+
+def test_pose_weights_runs_and_ramps():
+    def face(r5, lmk=0.9):
+        return [{"box": [0, 0, 10, 10], "detector": 0.8, "landmarker": lmk, "r5": r5}]
+    front, side = face(0.5), face(3.0)
+    seq = [side, front, side, side] + [front] * 4 + [side] + [front] * 4 + [face(0.5, lmk=0.2)] + [side] * 2
+    w = face_refine.pose_weights(seq, lambda i: None, len(seq))
+    assert w[1] == 0  # quadro bom isolado: trocar e destrocar piscaria
+    assert w[8] > 0  # quadro ruim isolado entre bons: preenchido
+    assert w[4] == pytest.approx(0.6) and w[5] == pytest.approx(0.8) and w[6] == 1.0  # entrada suave
+    assert w[12] == pytest.approx(0.6) and w[13] == 0 and w[15] == 0  # saída suave; 68 pontos ruins = perfil
+    everywhere = face_refine.pose_weights([front] * 5, lambda i: None, 5)
+    assert everywhere == [1.0] * 5  # vídeo todo de frente: sem rampa no começo e no fim
+    # Rosto fora da pessoa rastreada não conta.
+    assert face_refine.pose_weights([front] * 5, lambda i: np.zeros((20, 20), bool), 5) == [0.0] * 5
 
 
 def test_face_alpha_follows_what_changed():

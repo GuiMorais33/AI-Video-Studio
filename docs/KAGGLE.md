@@ -86,8 +86,10 @@ Assim que o vídeo do Kaggle é importado, o estúdio começa o refino sozinho:
 2. o rosto de cada quadro vira o das **fotos do rosto** (hyperswap com reforço de detalhe 512, todas
    as fotos combinadas numa identidade) e a nitidez é restaurada (GFPGAN), respeitando mãos e cabelo
    na frente do rosto;
-3. o rosto refinado é colado de volta com borda suave e estável de um quadro para o outro. Se o
-   detector perde o rosto por alguns quadros, o rastreador do FaceFusion preenche com os vizinhos;
+3. o rosto refinado é colado de volta com borda suave e estável de um quadro para o outro, **só nos
+   quadros em que o rosto está de frente até três quartos**. De perfil ou de costas, o FaceFusion
+   estraga a troca (rachaduras no rosto, boca fora do lugar, olho na bochecha), então ali fica o
+   rosto gerado pelo Wan. A troca entra e sai em 3 quadros, sem piscar;
 4. o vídeo vai para o tamanho dos Reels (**1080×1920** em pé, 1920×1080 deitado) e recebe o áudio
    original.
 
@@ -101,6 +103,9 @@ versão refinada.
   estúdio funciona sem o refino; atualize com `sudo do-release-upgrade` e rode o instalador de novo.
 - **Trocou as fotos do rosto?** Clique em **Refazer o refino do rosto**. Não precisa gerar no Kaggle
   de novo.
+- **Escolha vídeos em que a pessoa olha para a câmera** (de frente ou em três quartos) na maior parte
+  do tempo. Num vídeo com a pessoa de perfil o tempo todo (ex.: entrevistador virado para o
+  entrevistado), o refino quase não entra e o rosto fica o do Wan.
 
 O refino fica de fora, com aviso na etapa 4 e o vídeo sem ele, quando:
 - as fotos não têm um rosto humano detectável (personagem robô, de capacete);

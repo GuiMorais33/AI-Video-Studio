@@ -58,6 +58,9 @@ bash scripts/tests/setup.test.sh && bash scripts/tests/torch-choice.test.sh  # s
     FaceFusion troca todos os rostos da área em blocos (`--face-selector-mode many`), mas só volta
     para o vídeo o rosto que fica na maior parte dentro da silhueta da pessoa rastreada (SAM 2 +
     4 px). Com "one", o rosto de quem estava colado nela era trocado em alguns quadros e piscava.
+    De perfil o FaceFusion estraga a troca: `facefusion_probe.py` (roda com o Python do FaceFusion)
+    mede o ângulo do rosto em cada quadro, e só entram os quadros de frente até três quartos, em
+    trechos de 3+ quadros com rampa de entrada e saída.
     Grava `wan_final.mp4` em 1080x1920 com o áudio.
   - O FaceFusion local pede Ubuntu 24.04 (Python 3.11+, FFmpeg 5.1+). O `setup.sh` grava
     `.venv/.aivs-ok` só quando a instalação termina; sem ele, o motor não o considera instalado.
