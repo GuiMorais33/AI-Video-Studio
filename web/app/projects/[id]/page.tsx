@@ -8,6 +8,7 @@ import {
   type Health,
   type Job,
   type Project,
+  EngineError,
   engine,
   fileUrl,
   formatTime,
@@ -47,14 +48,18 @@ export default function ProjectPage() {
   const [mode, setMode] = useState<Mode>(1);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Motor sem responder: aviso à parte, que some sozinho quando ele volta (a tarefa pode seguir rodando).
+  const [offline, setOffline] = useState<string | null>(null);
   const originalRef = useRef<HTMLVideoElement>(null);
   const previewRef = useRef<HTMLVideoElement>(null);
 
   const refresh = useCallback(async () => {
     try {
       setProject(await engine.getProject(id));
+      setOffline(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      if (err instanceof EngineError && err.status === 0) setOffline(err.message);
+      else setError(err instanceof Error ? err.message : String(err));
     }
   }, [id]);
 
@@ -74,6 +79,12 @@ export default function ProjectPage() {
     const timer = setInterval(refresh, activeJobId ? (slowJob ? 2000 : 700) : 5000);
     return () => clearInterval(timer);
   }, [activeJobId, slowJob, remoteJobId, refresh]);
+
+  useEffect(() => {
+    if (!offline) return;
+    const timer = setInterval(refresh, 3000);
+    return () => clearInterval(timer);
+  }, [offline, refresh]);
 
   const lastFrame = (project?.num_frames ?? 1) - 1;
   const goTo = useCallback((idx: number) => setFrame(Math.max(0, Math.min(lastFrame, idx))), [lastFrame]);
@@ -123,7 +134,8 @@ export default function ProjectPage() {
   }
 
   if (!project) {
-    return error ? <div className="banner error">{error}</div> : <p className="muted">Carregando projeto…</p>;
+    const problem = offline ?? error;
+    return problem ? <div className="banner error">{problem}</div> : <p className="muted">Carregando projeto…</p>;
   }
 
   const fps = fpsValue(project.fps);
@@ -164,6 +176,11 @@ export default function ProjectPage() {
 
       {health?.tracker === "demo" && (
         <div className="banner warn">Modo DEMONSTRAÇÃO: máscaras geométricas, sem IA.</div>
+      )}
+      {offline && (
+        <div className="banner error">
+          {offline} <span className="muted">(tentando de novo a cada 3 s)</span>
+        </div>
       )}
       {error && (
         <div className="banner error" onClick={() => setError(null)}>

@@ -39,8 +39,10 @@ def make_video(
 
 @pytest.fixture
 def settings(tmp_path: Path) -> Settings:
-    # Sem FaceFusion: um instalado de verdade no computador não pode entrar nos testes.
-    return Settings(data_dir=tmp_path / "data", tracker="demo", facefusion_dir=tmp_path / "sem-facefusion")
+    # Sem FaceFusion: um instalado de verdade no computador não pode entrar nos testes. A memória
+    # livre do computador de teste também não decide nada (o FaceFusion dos testes é falso).
+    return Settings(data_dir=tmp_path / "data", tracker="demo", facefusion_dir=tmp_path / "sem-facefusion",
+                    facefusion_min_memory_gb=0)
 
 
 @pytest.fixture

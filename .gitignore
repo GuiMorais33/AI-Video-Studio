@@ -12,6 +12,8 @@ __pycache__/
 node_modules/
 .next/
 next-env.d.ts
+# Gerado pelo "next dev" 16.4 (regras para agentes de IA)
+web/AGENTS.md
 *.tsbuildinfo
 
 # Pesos de modelos fora de /data

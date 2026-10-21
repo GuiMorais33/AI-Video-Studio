@@ -58,6 +58,8 @@ CREATE INDEX IF NOT EXISTS jobs_by_project ON jobs(project_id, created_at);
 """
 
 ACTIVE_JOB_STATUSES = ("queued", "running")
+INTERRUPTED = ("Interrompida: o estúdio fechou no meio da tarefa (janela fechada, falta de memória ou computador "
+               "em suspensão). Rode a tarefa de novo; o que aconteceu fica em data/logs/motor.log.")
 
 
 def _now() -> str:
@@ -76,9 +78,8 @@ class Database:
             conn.executescript(SCHEMA)
             # Tarefas que estavam rodando quando o motor parou não vão terminar.
             conn.execute(
-                "UPDATE jobs SET status = 'error', message = 'Interrompida: o motor foi reiniciado.', "
-                "updated_at = ? WHERE status IN ('queued', 'running')",
-                (_now(),),
+                "UPDATE jobs SET status = 'error', message = ?, updated_at = ? WHERE status IN ('queued', 'running')",
+                (INTERRUPTED, _now()),
             )
 
     @contextmanager

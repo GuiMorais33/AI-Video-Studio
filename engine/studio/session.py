@@ -164,3 +164,11 @@ class TrackingSession:
                 self._loaded_project = None
                 self._points = {}
                 self._seeded = set()
+
+    def release(self) -> None:
+        """Solta o vídeo carregado no rastreador, seja de que projeto for. O SAM 2 guarda o clipe
+        inteiro na memória (5 s a 30 fps: ~3 GB no motor, medido) e não precisa dele fora da seleção;
+        o próximo clique recarrega o vídeo e as máscaras do disco."""
+        with self._lock:
+            if self._loaded_project is not None:
+                self.forget(self._loaded_project)

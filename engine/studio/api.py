@@ -87,8 +87,8 @@ def create_app(
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
         yield
-        jobs.shutdown()
-        remote_jobs.shutdown()
+        remote_jobs.shutdown()  # a geração continua no Kaggle; ao voltar, é só importar
+        jobs.shutdown(timeout=10)
 
     app = FastAPI(title="AI Video Studio — motor", version=__version__, lifespan=lifespan)
     app.add_middleware(
@@ -178,6 +178,9 @@ def create_app(
             return None
 
         def run(progress: Callable[..., None]) -> str:
+            # O FaceFusion chega a 5,4 GB; o vídeo que o SAM 2 guarda para a seleção, a ~3 GB. Juntos
+            # estouravam a memória do WSL e o Linux matava o motor no meio do refino.
+            session.release()
             return face_refine.refine(get_project(project_id), root, settings, progress, stop=jobs.stopping)
 
         return jobs.submit(project_id, "face_refine", run, conflict=conflict)

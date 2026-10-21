@@ -93,6 +93,9 @@ INSTALL_MARKER = ".aivs-ok"
 
 NOT_INSTALLED = "Refino do rosto não instalado: rode o instalador de novo (bash scripts/setup.sh)."
 STOPPED = "Refino do rosto interrompido: o motor foi encerrado. Use \"Refazer o refino do rosto\"."
+# Faltando memória, o Linux mata o processo com o maior "oom_score": tem de ser o FaceFusion (o motor
+# avisa e segue), não o motor, que só ocupa menos por um instante (medido: o motor foi o escolhido).
+OOM_SCORE_ADJ = "1000"
 
 ProgressFn = Callable[..., None]
 
@@ -349,6 +352,51 @@ def facefusion_command(settings: Settings, sources: list[Path], target: Path, ou
     ]
 
 
+@functools.lru_cache(maxsize=1)
+def _pdeathsig_prefix() -> tuple[str, ...]:
+    """`setpriv --pdeathsig KILL` (util-linux): o FaceFusion morre junto se o motor morrer (janela
+    fechada, falta de memória). Sem isso ele fica órfão, gastando CPU e memória até o fim do vídeo."""
+    setpriv = shutil.which("setpriv")
+    if setpriv is None:
+        return ()
+    try:
+        ok = subprocess.run([setpriv, "--pdeathsig", "KILL", "--", "true"], capture_output=True, timeout=10).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        ok = False
+    return (setpriv, "--pdeathsig", "KILL", "--") if ok else ()
+
+
+def _spawn_child(command: list[str], **kwargs: Any) -> subprocess.Popen:
+    """Abre o FaceFusion (ou o medidor de rostos) no seu próprio grupo de processos, preso à vida do
+    motor e como o primeiro da fila do OOM killer. Os processos que ele abrir herdam o oom_score.
+
+    O pdeathsig dispara quando a *thread* que abriu o processo termina: quem chama tem de esperar o
+    processo acabar (a tarefa do refino espera)."""
+    proc = subprocess.Popen([*_pdeathsig_prefix(), *command], start_new_session=True, **kwargs)
+    try:
+        Path(f"/proc/{proc.pid}/oom_score_adj").write_text(OOM_SCORE_ADJ)
+    except OSError:
+        pass
+    return proc
+
+
+def free_memory_gb() -> float | None:
+    """RAM livre + swap livre do Linux (no WSL, a memória da máquina virtual), em GB."""
+    try:
+        fields = dict(line.split(":", 1) for line in Path("/proc/meminfo").read_text().splitlines() if ":" in line)
+        kb = int(fields["MemAvailable"].split()[0]) + int(fields.get("SwapFree", "0 kB").split()[0])
+    except (OSError, KeyError, ValueError):
+        return None
+    return kb / 1024 / 1024
+
+
+def low_memory_message(free: float, need: float) -> str:
+    return (f"Pouca memória para o refino do rosto: o Ubuntu tem {free:.1f} GB livres (contando o swap) e o "
+            f"FaceFusion precisa de uns {need:g} GB. Feche outros programas (inclusive no Windows) e use "
+            "\"Refazer o refino do rosto\". Se o computador tem 8 GB de RAM ou menos, aumente a memória do "
+            "WSL: veja \"Se o estúdio fechar sozinho\" no README.")
+
+
 @dataclass
 class FaceFusionRun:
     code: int
@@ -378,8 +426,8 @@ def run_facefusion(settings: Settings, sources: list[Path], target: Path, output
     log_path.parent.mkdir(parents=True, exist_ok=True)
     idle_limit = settings.facefusion_idle_timeout_s
     with open(log_path, "wb") as log:
-        proc = subprocess.Popen(command, cwd=settings.facefusion_dir, env=env, stdin=subprocess.DEVNULL,
-                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True)
+        proc = _spawn_child(command, cwd=settings.facefusion_dir, env=env, stdin=subprocess.DEVNULL,
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         last_output = [time.monotonic()]
         finished = threading.Event()
         why: list[str] = []
@@ -457,7 +505,8 @@ def failure_reason(run: FaceFusionRun, settings: Settings) -> str | None:
         return "o filtro de conteúdo do FaceFusion barrou o vídeo"
     if run.code == -signal.SIGKILL:  # o nosso SIGKILL já virou timed_out/stopped: este veio de fora
         return ("o sistema encerrou o FaceFusion à força, quase sempre por falta de memória: feche outros "
-                "programas (ou aumente a memória do WSL com memory= no .wslconfig) e use \"Refazer o refino do rosto\"")
+                "programas e use \"Refazer o refino do rosto\" (com 8 GB de RAM ou menos, aumente a memória do "
+                "WSL: veja \"Se o estúdio fechar sozinho\" no README)")
     if run.code < 0:
         return f"o FaceFusion caiu com o sinal {-run.code} (veja exports/facefusion_rosto.log)"
     if run.code == 0:
@@ -503,8 +552,8 @@ def probe_faces(settings: Settings, video: Path, work: Path, stop: threading.Eve
     command = [str(settings.facefusion_python_path), "-I", str(PROBE_SCRIPT), str(settings.facefusion_dir), str(video),
                str(output), str(settings.facefusion_threads)]
     try:
-        proc = subprocess.Popen(command, cwd=settings.facefusion_dir, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                                stderr=subprocess.DEVNULL, start_new_session=True)
+        proc = _spawn_child(command, cwd=settings.facefusion_dir, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL)
     except OSError:
         return None
     deadline = time.monotonic() + settings.facefusion_idle_timeout_s
@@ -646,6 +695,10 @@ def refine(project: dict[str, Any], root: Path, settings: Settings, progress: Pr
     sources = face_sources(root)
     if not sources:
         raise FaceRefineError("Envie a imagem do personagem ou fotos do rosto antes do refino do rosto.")
+    need = settings.facefusion_min_memory_gb
+    free = free_memory_gb() if need > 0 else None
+    if free is not None and free < need:
+        raise FaceRefineError(low_memory_message(free, need))
     previous = read_result(root)
     started = time.monotonic()
     info = media.probe(result)

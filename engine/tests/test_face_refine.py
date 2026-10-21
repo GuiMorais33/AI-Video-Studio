@@ -517,6 +517,155 @@ def test_engine_shutdown_stops_facefusion(ff_settings, monkeypatch, fake_facefus
     assert job["status"] == "error" and "interrompido" in job["message"]
 
 
+# --------------------------------------------------------------------------- memória e motor de verdade
+
+def test_refine_releases_the_tracker_video(ff_settings, fake_facefusion, tmp_path):
+    """O SAM 2 guarda o clipe inteiro (~3 GB em 5 s a 30 fps): sai da memória antes do FaceFusion."""
+    with TestClient(create_app(ff_settings)) as client:
+        pid = _portrait_project(client, tmp_path)
+        session = client.app.state.session
+        assert session._loaded_project == pid  # a seleção deixou o vídeo carregado
+        _import(client, pid, _video(tmp_path / "resultado.mp4", "464x832", 16))
+        assert client.get(f"/projects/{pid}").json()["jobs"]["face_refine"]["status"] == "done"
+        assert session._loaded_project is None
+        # A seleção continua funcionando: o próximo clique recarrega o vídeo e as máscaras do disco.
+        assert client.post(f"/projects/{pid}/clicks", json={"frame_idx": 3, "x": 180, "y": 320, "label": 1}).status_code == 200
+
+
+def test_low_memory_stops_before_facefusion(ff_settings, monkeypatch, fake_facefusion, tmp_path):
+    monkeypatch.setattr(face_refine, "free_memory_gb", lambda: 3.2)
+    settings = dataclasses.replace(ff_settings, facefusion_min_memory_gb=5.5)
+    with TestClient(create_app(settings)) as client:
+        pid = _portrait_project(client, tmp_path)
+        _import(client, pid, _video(tmp_path / "resultado.mp4", "464x832", 16))
+        job = client.get(f"/projects/{pid}").json()["jobs"]["face_refine"]
+    assert job["status"] == "error" and "3.2 GB livres" in job["message"] and "5.5 GB" in job["message"], job
+    assert "README" in job["message"]
+    assert not (fake_facefusion / "args.json").exists(), "abriu o FaceFusion sem memória"
+
+
+def test_free_memory_counts_swap():
+    free = face_refine.free_memory_gb()
+    assert free is not None and free > 0
+
+
+@pytest.mark.skipif(not face_refine._pdeathsig_prefix(), reason="sem setpriv --pdeathsig")
+def test_facefusion_dies_with_its_parent_and_is_the_oom_victim(tmp_path):
+    """Motor morto à força (falta de memória, janela fechada): o FaceFusion não fica órfão."""
+    script = tmp_path / "pai.py"
+    script.write_text(
+        "import os, sys, threading, time\n"
+        f"sys.path.insert(0, {str(Path(face_refine.__file__).parents[1])!r})\n"
+        "from studio import face_refine\n"
+        "def start():\n"  # como no motor: a thread da fila de tarefas abre o FaceFusion e espera por ele
+        "    proc = face_refine._spawn_child(['sleep', '300'])\n"
+        "    print(proc.pid, flush=True)\n"
+        "    proc.wait()\n"
+        "threading.Thread(target=start).start()\n"
+        "time.sleep(300)\n"
+    )
+    parent = subprocess.Popen([sys.executable, str(script)], stdout=subprocess.PIPE, text=True)
+    child = int(parent.stdout.readline())
+    try:
+        assert _alive(child)
+        assert Path(f"/proc/{child}/oom_score_adj").read_text().strip() == face_refine.OOM_SCORE_ADJ
+        parent.kill()
+        parent.wait()
+        assert _wait_dead([child]), "o filho continuou vivo depois de o motor morrer"
+    finally:
+        parent.kill()
+        subprocess.run(["kill", "-9", str(child)], capture_output=True)
+
+
+def _free_port() -> int:
+    import socket
+
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+def _serve(settings, fake_facefusion: Path, port: int) -> subprocess.Popen:
+    import os
+
+    env = {**os.environ, "STUDIO_DATA_DIR": str(settings.data_dir), "STUDIO_TRACKER": "demo",
+           "STUDIO_FACEFUSION_DIR": str(fake_facefusion), "STUDIO_FACEFUSION_MIN_MEMORY_GB": "0",
+           "FAKE_FACEFUSION_MODE": "hang"}
+    return subprocess.Popen([sys.executable, "-m", "studio.cli", "serve", "--host", "127.0.0.1", "--port", str(port)],
+                            env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+
+
+def _job_row(settings, kind: str) -> tuple[str, str]:
+    import sqlite3
+
+    # Direto no SQLite: abrir um Database marcaria a tarefa como interrompida.
+    with sqlite3.connect(settings.data_dir / "studio.db") as conn:
+        return conn.execute("SELECT status, message FROM jobs WHERE kind = ? ORDER BY created_at DESC LIMIT 1",
+                            (kind,)).fetchone()
+
+
+@pytest.mark.parametrize("sig", ["SIGTERM", "SIGHUP"])
+def test_real_server_stops_cleanly_and_runs_once(ff_settings, fake_facefusion, tmp_path, sig):
+    """`studio serve` de verdade: um 2º motor na mesma pasta não sobe (cortaria a tarefa do 1º), e
+    fechar a janela (SIGHUP) ou o start.sh encerrando (SIGTERM) para o FaceFusion e grava o motivo."""
+    import signal
+
+    import httpx
+
+    settings = ff_settings
+    with TestClient(create_app(settings)) as client:
+        pid = _portrait_project(client, tmp_path)
+    port = _free_port()
+    server = _serve(settings, fake_facefusion, port)
+    try:
+        url = f"http://127.0.0.1:{port}"
+        deadline = time.monotonic() + 60
+        while True:
+            try:
+                httpx.get(f"{url}/health", timeout=2)
+                break
+            except httpx.HTTPError:
+                assert server.poll() is None and time.monotonic() < deadline, server.stdout.read()
+                time.sleep(0.2)
+        with open(_video(tmp_path / "resultado.mp4", "464x832", 16), "rb") as f:
+            # O refino do rosto começa sozinho depois da importação.
+            assert httpx.post(f"{url}/projects/{pid}/wan-result", files={"file": ("r.mp4", f)}, timeout=120).status_code == 200
+        deadline = time.monotonic() + 30
+        while not (fake_facefusion / "pids").exists():
+            assert time.monotonic() < deadline, "o FaceFusion não começou"
+            time.sleep(0.1)
+        ff_pids = [int(p) for p in (fake_facefusion / "pids").read_text().split()]
+
+        second = _serve(settings, fake_facefusion, _free_port())
+        out, _ = second.communicate(timeout=60)
+        assert second.returncode == 3 and "já está aberto" in out, out
+        assert _job_row(settings, "face_refine")[0] == "running", "o 2º motor marcou a tarefa do 1º como interrompida"
+
+        server.send_signal(getattr(signal, sig))
+        server.wait(timeout=30)
+        assert _wait_dead(ff_pids[:1]), "o FaceFusion continuou rodando depois de o motor encerrar"
+        status, message = _job_row(settings, "face_refine")
+        assert status == "error" and "interrompido" in message, (status, message)
+        assert "GET /health" not in server.stdout.read(), "log de acesso ligado"
+    finally:
+        server.kill()
+        for p in [int(p) for p in (fake_facefusion / "pids").read_text().split()] if (fake_facefusion / "pids").exists() else []:
+            subprocess.run(["kill", "-9", str(p)], capture_output=True)
+
+
+def test_restart_explains_the_interruption(settings):
+    from studio.db import Database
+
+    db = Database(settings.db_path)
+    project = db.create_project(id="p1", name="p", source_name="v.mp4", clip_start=0.0, width=2, height=2,
+                                fps="1/1", num_frames=1, duration=1.0, has_audio=0)
+    job = db.create_job(project["id"], "face_refine")
+    db.update_job(job["id"], status="running")
+    db = Database(settings.db_path)  # o motor subindo de novo
+    message = db.latest_jobs("p1")["face_refine"]["message"]
+    assert "janela fechada, falta de memória ou computador em suspensão" in message and "motor.log" in message
+
+
 # --------------------------------------------------------------------------- instalação e vídeos antigos
 
 def test_not_installed(settings, tmp_path):

@@ -26,6 +26,7 @@ function global:wsl.exe {
         return $lines | ForEach-Object { $_.ToCharArray() -join $z }  # saida UTF-16 como no wsl.exe antigo
     }
     if ($args[0] -eq "--set-version") { $S.Version = "2"; return }
+    if ($args[0] -eq "--version") { return "WSL version: $($S.WslVersion)", "Kernel version: 6.6.87.2-1" }
     if ($args[0] -eq "-d" -and $args.Count -eq 2) { $S.User = "guimo"; return }  # sessao interativa: cria usuario
     if ($args[0] -eq "-d" -and $args[2] -eq "-e") {
         $command = $args[-1]
@@ -34,6 +35,11 @@ function global:wsl.exe {
             $S.Probed = $true
             if ($S.Existing) { $global:LASTEXITCODE = 0 } else { $global:LASTEXITCODE = 1 }
             return
+        }
+        if ($command -like "*bash scripts/start.sh") {  # o lancador abrindo o estudio
+            $S.Started = $true
+            $global:LASTEXITCODE = $S.StartCode
+            return "saida do start.sh"
         }
         $S.Setup = $command
         $global:LASTEXITCODE = $S.SetupCode
@@ -52,6 +58,15 @@ function global:Start-Process {
 }
 
 function global:Read-Host { param($Prompt) $global:S.Prompts += ,$Prompt; return "" }
+
+# Para o lancador: o motor responde (estudio ja aberto)? O resto so nao pode esperar de verdade.
+function global:Invoke-WebRequest {
+    param($Uri, [switch]$UseBasicParsing, $TimeoutSec)
+    $global:S.WebRequests += ,$Uri
+    if (-not $global:S.Running) { throw "conexao recusada" }
+}
+function global:Start-Job { param($ScriptBlock) }
+function global:Start-Sleep { param($Seconds) }
 
 # Registro do WSL (onde fica o disco do Ubuntu) e espaco livre no disco do Windows.
 function global:Get-ItemProperty {
@@ -89,6 +104,7 @@ function Invoke-Scenario([string]$name, [hashtable]$state) {
         Installed = $false; InstallWorks = $true; Version = "2"; User = "root"; SetupCode = 0; FreeGB = 50
         Calls = @(); StartProcess = @(); Prompts = @(); Setup = $null; Shortcut = $null; DriveQueried = $null
         Existing = $false; Probed = $false
+        Running = $false; Started = $false; StartCode = 0; WslVersion = "3.0.3.0"; WebRequests = @()
     }
     foreach ($key in $state.Keys) { $defaults[$key] = $state[$key] }
     $global:S = [pscustomobject]$defaults
@@ -120,6 +136,37 @@ Check ($r.Output -match "Pronto!") "termina com sucesso"
 $errors = $null
 [System.Management.Automation.Language.Parser]::ParseFile($launcher, [ref]$null, [ref]$errors) | Out-Null
 Check ($errors.Count -eq 0) "lancador gerado e PowerShell valido"
+$launcherText = Get-Content $launcher -Raw
+Check ($launcherText -notmatch '[^\x00-\x7F]') "lancador so com ASCII (PowerShell 5.1)"
+Check ($launcherText -match 'SetThreadExecutionState\(\[uint32\]2147483649\)') "segura a suspensao enquanto a janela esta aberta"
+Check ($launcherText -match 'SetConsoleMode\(\$consoleIn, \[uint32\]\(\(\$mode -band 4294967231\) -bor 128\)\)') "desliga a Edicao Rapida"
+
+function Invoke-Launcher([string]$name, [hashtable]$state) {
+    Write-Host "Cenario: lancador, $name" -ForegroundColor Cyan
+    foreach ($key in $state.Keys) { $global:S.$key = $state[$key] }
+    $global:S.Calls = @(); $global:S.StartProcess = @(); $global:S.Prompts = @(); $global:S.Started = $false
+    $global:LASTEXITCODE = 0
+    return (& $launcher 6>&1 | Out-String)
+}
+
+$out = Invoke-Launcher "estudio fecha sozinho com WSL antigo" @{ Running = $false; WslVersion = "2.7.14.0"; StartCode = 137 }
+Check $global:S.Started "sobe o estudio pelo start.sh"
+Check ($out -match "wsl --update") "avisa que o WSL antigo derruba tudo quando falta memoria"
+Check ($out -match "parou as \d\d:\d\d \(codigo 137\)") "diz quando e com que codigo o estudio parou"
+Check ($out -match "data/logs/motor.log") "mostra onde fica o registro do motor"
+Check ((@($global:S.Prompts) -match "Pressione Enter").Count -eq 1) "a janela espera um Enter em vez de sumir"
+
+$out = Invoke-Launcher "WSL atualizado" @{ Running = $false; WslVersion = "3.0.3.0"; StartCode = 0 }
+Check ($out -notmatch "wsl --update") "nao pede atualizacao no WSL 3.0.3"
+
+$out = Invoke-Launcher "estudio ja aberto em outra janela" @{ Running = $true }
+Check (-not $global:S.Started) "nao sobe um segundo estudio (cortaria o refino em andamento)"
+Check (@($global:S.StartProcess | Where-Object { $_.File -eq "http://localhost:3000" }).Count -eq 1) "so abre o navegador"
+Check ($global:S.Prompts.Count -eq 0) "e fecha sem esperar"
+
+$out = Invoke-Launcher "start.sh achou outro estudio aberto" @{ Running = $false; StartCode = 3 }
+Check (@($global:S.StartProcess | Where-Object { $_.File -eq "http://localhost:3000" }).Count -eq 1) "abre o navegador do estudio que ja estava aberto"
+Check ($global:S.Prompts.Count -eq 0) "sem pedir Enter"
 
 # 2) Ubuntu ja instalado em WSL1 e com usuario: converte, nao pede admin, setup falha -> sai com erro.
 $r = Invoke-Scenario "setup com falha" @{ Installed = $true; Version = "1"; User = "guimo"; SetupCode = 3 }

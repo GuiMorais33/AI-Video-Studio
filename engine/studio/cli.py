@@ -46,15 +46,38 @@ def cmd_models(args: argparse.Namespace) -> int:
     return 0
 
 
+ALREADY_RUNNING = 3  # código de saída do `serve` quando outro motor já usa a mesma pasta de dados
+
+
 def cmd_serve(args: argparse.Namespace) -> int:
+    import fcntl
     import logging
+    import signal
 
     import uvicorn
 
     from .api import create_app
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-    uvicorn.run(create_app(_settings(args)), host=args.host, port=args.port)
+    settings = _settings(args)
+    settings.data_dir.mkdir(parents=True, exist_ok=True)
+    # Um motor por pasta de dados: ao subir, o motor marca como interrompidas as tarefas em andamento,
+    # e um segundo motor (atalho aberto duas vezes) cortaria o refino que o primeiro está fazendo.
+    lock = open(settings.data_dir / "studio.lock", "w")
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        print("O AI Video Studio já está aberto (em outra janela ou terminal): use http://localhost:3000",
+              file=sys.stderr)
+        return ALREADY_RUNNING
+    # Sem log de acesso: o painel consulta a cada 2 s, e cada linha no console do Windows pode travar o
+    # motor (seleção de texto na janela pausa quem escreve nela).
+    server = uvicorn.Server(uvicorn.Config(create_app(settings), host=args.host, port=args.port, access_log=False))
+    # Janela do atalho fechada (SIGHUP): encerra como no Ctrl+C, e a tarefa em andamento para o
+    # FaceFusion e grava que foi interrompida, em vez de o motor morrer na hora.
+    signal.signal(signal.SIGHUP, lambda *_: setattr(server, "should_exit", True))
+    server.run()
+    lock.close()
     return 0
 
 

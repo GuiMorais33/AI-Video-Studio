@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import threading
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor, wait
 from typing import Any, Callable
 
 from .db import Database
@@ -28,6 +28,7 @@ class JobRunner:
         self._submit_lock = threading.Lock()
         # Ligado ao encerrar o motor: tarefas com processo externo (FaceFusion) o encerram ao ver.
         self.stopping = threading.Event()
+        self._pending: set[Future] = set()
 
     def submit(
         self,
@@ -47,7 +48,9 @@ class JobRunner:
             if reason:
                 raise JobConflict(reason)
             job = self.db.create_job(project_id, kind)
-        self._pool.submit(self._run, job["id"], fn)
+            future = self._pool.submit(self._run, job["id"], fn)
+            self._pending.add(future)
+        future.add_done_callback(self._pending.discard)
         return job
 
     def _run(self, job_id: str, fn: Callable[[Callable[..., None]], str | None]) -> None:
@@ -77,6 +80,10 @@ class JobRunner:
         """Bloqueia até a fila esvaziar (usado em testes e na linha de comando)."""
         self._pool.submit(lambda: None).result(timeout=timeout)
 
-    def shutdown(self) -> None:
+    def shutdown(self, timeout: float = 0.0) -> None:
+        """Encerra a fila. Espera até `timeout` s a tarefa em andamento parar: quem vê `stopping`
+        (refino do rosto) encerra o FaceFusion e grava que foi interrompido antes de o motor sair."""
         self.stopping.set()
         self._pool.shutdown(wait=False, cancel_futures=True)
+        if timeout > 0:
+            wait(list(self._pending), timeout=timeout)

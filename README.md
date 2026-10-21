@@ -44,6 +44,10 @@ os modelos dele, baixados no primeiro uso). Para usar uma placa NVIDIA no SAM 2 
 o PyTorch com GPU tem ~7 GB. Com menos que isso, o instalador usa a versão só-CPU (~200 MB), que
 funciona igual, só que mais devagar.
 
+**Memória:** o refino do rosto precisa de uns 6 GB livres no Ubuntu, que fica com metade da RAM do
+Windows. Com 16 GB de RAM, funciona direto. Com 8 GB, veja [Se o estúdio fechar
+sozinho](#se-o-estúdio-fechar-sozinho).
+
 1. Abra o **PowerShell** (normal, não precisa ser administrador) e cole:
    ```powershell
    irm https://raw.githubusercontent.com/GuiMorais33/AI-Video-Studio/HEAD/scripts/instalar-windows.ps1 -OutFile $env:TEMP\instalar-aivs.ps1
@@ -82,6 +86,32 @@ Pode rodar o instalador de novo a qualquer momento: ele continua de onde parou e
 **Aviso "wsl: Failed to start the systemd user session".** É um problema conhecido de versões
 recentes do WSL, não do estúdio: o estúdio abre mesmo assim, só um pouco mais devagar. Para o aviso
 sumir, rode no PowerShell `wsl --update` e depois `wsl --shutdown`, e abra o atalho de novo.
+
+### Se o estúdio fechar sozinho
+
+Quase sempre é **falta de memória** no Ubuntu, durante o refino do rosto. O WSL fica com metade da
+RAM do Windows, e o FaceFusion chega a 5,4 GB. Antes de começar, o estúdio solta o vídeo que o SAM 2
+guardava para a seleção (cerca de 2 GB) e confere se há uns 6 GB livres, contando o swap. Se não
+houver, ele avisa em vez de cair.
+
+- **Atualize o WSL:** rode `wsl --update` no PowerShell. Antes da versão 2.9.5, quando a memória
+  acaba, o Ubuntu derruba tudo o que a janela do atalho abriu, e a janela some. O atalho avisa
+  quando o seu WSL é antigo.
+- **Com 8 GB de RAM ou menos,** dê mais swap ao WSL. Crie o arquivo `%UserProfile%\.wslconfig` com:
+  ```ini
+  [wsl2]
+  swap=8GB
+  ```
+  Depois rode `wsl --shutdown` e abra o atalho de novo. O refino fica mais lento, mas não cai.
+- **Feche outros programas** durante o refino, inclusive no Windows.
+- **Suspensão:** enquanto a janela do atalho está aberta, o computador não suspende sozinho (a tela
+  ainda pode apagar). Na bateria, o Windows pode suspender mesmo assim: deixe o notebook na tomada.
+- **Não abra o atalho duas vezes.** Com o estúdio já aberto, o atalho só abre o navegador.
+- **O registro do motor** fica em `~/AI-Video-Studio/data/logs/motor.log` (o da vez anterior, em
+  `motor.anterior.log`). No Windows, abra pelo Explorador em
+  `\\wsl$\Ubuntu\home\<seu usuário>\AI-Video-Studio\data\logs`.
+
+Para o atalho ganhar essas proteções, rode o instalador de novo (os mesmos comandos do passo 1).
 
 **Diagnóstico sem instalar nada.** Com o projeto baixado, rode no PowerShell:
 ```powershell

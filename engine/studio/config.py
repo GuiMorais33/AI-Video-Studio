@@ -45,6 +45,10 @@ class Settings:
     # Sem nenhuma saída do FaceFusion por este tempo, ele é encerrado (download travado, processo
     # preso). Não há limite total: na CPU, o refino de um clipe leva de minutos a mais de uma hora.
     facefusion_idle_timeout_s: float = 20 * 60
+    # Memória livre (RAM + swap do Ubuntu) exigida antes de abrir o FaceFusion: ele chega a 5,4 GB
+    # com 4 threads (medido). Faltando memória, o Linux mata processos e, no WSL antes do 2.9.5, o
+    # estúdio inteiro cai junto; melhor avisar antes. 0 desliga a checagem.
+    facefusion_min_memory_gb: float = 5.5
     # Refina o rosto sozinho logo que o vídeo do Wan chega (do Kaggle ou importado à mão).
     face_refine_auto: bool = True
 
@@ -82,5 +86,6 @@ class Settings:
             facefusion_python=Path(ff_python).expanduser() if ff_python else None,
             facefusion_threads=_env_int("STUDIO_FACEFUSION_THREADS", 4),
             facefusion_idle_timeout_s=_env_float("STUDIO_FACEFUSION_IDLE_TIMEOUT_S", 20 * 60),
+            facefusion_min_memory_gb=_env_float("STUDIO_FACEFUSION_MIN_MEMORY_GB", 5.5),
             face_refine_auto=os.environ.get("STUDIO_FACE_REFINE_AUTO", "1") != "0",
         )

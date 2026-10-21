@@ -39,6 +39,23 @@ bash scripts/tests/setup.test.sh && bash scripts/tests/torch-choice.test.sh  # s
   - Desfazer restaura o PNG salvo em `history/<click_id>.png`.
 - Tarefas longas (rastrear, exportar, refino do rosto) rodam em um único worker (`jobs.py`), com
   progresso no SQLite. Cliques retornam 409 enquanto há tarefa ativa.
+- Encerrar e cair:
+  - `studio serve` trava `data/studio.lock` (um motor por pasta de dados; um segundo sai com
+    código 3). Ao subir, o motor marca como interrompidas as tarefas que ficaram rodando.
+  - O motor roda sem log de acesso. SIGHUP (janela fechada) e SIGTERM esperam até 10 s a tarefa
+    parar e gravar "interrompido".
+  - `start.sh` põe motor e painel cada um no seu `setsid` e grava o motor em
+    `data/logs/motor.log`.
+  - O lançador do Windows (gerado pelo `instalar-windows.ps1`):
+    - segura a suspensão e desliga a Edição Rápida;
+    - não sobe um segundo estúdio;
+    - não some sem mostrar o código de saída.
+- Memória (a causa medida das quedas no refino):
+  - O SAM 2 guarda o clipe inteiro (~2 GB em 5 s a 30 fps) e o FaceFusion chega a 5,4 GB.
+  - Antes do refino, o motor solta o vídeo do SAM 2 (`session.release()`) e confere a RAM livre
+    mais o swap (`facefusion_min_memory_gb`).
+  - O FaceFusion e o medidor de rostos saem com `setpriv --pdeathsig KILL` e `oom_score_adj`
+    1000: morrem junto com o motor e, se faltar memória, são eles os mortos, não o motor.
 - O painel (`web/`) fala direto com o motor via CORS (`NEXT_PUBLIC_ENGINE_URL`).
 - Fase 3:
   - `remote/kaggle/aivs_wan.py` é a fonte do notebook. Depois de editá-lo, rode

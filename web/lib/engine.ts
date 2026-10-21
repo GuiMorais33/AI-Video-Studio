@@ -117,6 +117,11 @@ export interface Health {
   limits: { default_seconds: number; max_seconds: number; max_side: number; max_fps: number };
 }
 
+// Fetch falhou sem resposta: o motor caiu, ainda está subindo ou a janela do estúdio fechou.
+const OFFLINE =
+  `O motor do estúdio não respondeu em ${ENGINE_URL}. Se a janela do AI Video Studio fechou, abra o atalho de ` +
+  "novo (ou rode bash scripts/start.sh); se ela continua aberta, não abra outra: espere ele voltar.";
+
 export class EngineError extends Error {
   constructor(message: string, readonly status: number) {
     super(message);
@@ -128,7 +133,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   try {
     resp = await fetch(`${ENGINE_URL}${path}`, { cache: "no-store", ...init });
   } catch {
-    throw new EngineError(`Motor fora do ar em ${ENGINE_URL}. Inicie com: bash scripts/start.sh`, 0);
+    throw new EngineError(OFFLINE, 0);
   }
   if (!resp.ok) {
     let detail = resp.statusText;
@@ -209,7 +214,7 @@ export function uploadProject(
     const xhr = new XMLHttpRequest();
     xhr.open("POST", `${ENGINE_URL}/projects`);
     xhr.upload.onprogress = (e) => e.lengthComputable && onProgress(e.loaded / e.total);
-    xhr.onerror = () => reject(new EngineError(`Motor fora do ar em ${ENGINE_URL}.`, 0));
+    xhr.onerror = () => reject(new EngineError(OFFLINE, 0));
     xhr.onload = () => {
       let body: { detail?: unknown } = {};
       try {

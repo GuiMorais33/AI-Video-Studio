@@ -23,6 +23,19 @@ class TrackerError(RuntimeError):
     pass
 
 
+def _return_memory_to_os() -> None:
+    """Depois de soltar o vídeo do SAM 2: coleta os ciclos e devolve ao sistema a memória livre do
+    malloc (sem isso, os pedaços pequenos continuam contando para o motor)."""
+    import ctypes
+    import gc
+
+    gc.collect()
+    try:
+        ctypes.CDLL("libc.so.6").malloc_trim(0)
+    except (OSError, AttributeError):  # fora da glibc
+        pass
+
+
 class Tracker(ABC):
     name: str
     device: str
@@ -117,6 +130,7 @@ class Sam2Tracker(Tracker):
     def unload(self) -> None:
         self._state = None
         self._seeds = {}
+        _return_memory_to_os()
 
     def add_mask(self, frame_idx: int, obj_id: int, mask: np.ndarray) -> None:
         mask = np.asarray(mask, dtype=bool)

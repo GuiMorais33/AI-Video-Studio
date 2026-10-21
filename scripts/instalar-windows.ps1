@@ -170,6 +170,50 @@ $launcherBody = @'
 # Abre o AI Video Studio: sobe motor + painel no WSL e abre o navegador quando estiver pronto.
 param([string]$Distro = "__DISTRO__")
 $env:WSL_UTF8 = "1"
+$panelUrl = "http://localhost:3000"
+
+# Ja aberto em outra janela? So abre o navegador: um segundo estudio cortaria a tarefa em andamento.
+$running = $false
+try {
+    Invoke-WebRequest -Uri "http://127.0.0.1:8765/health" -UseBasicParsing -TimeoutSec 3 | Out-Null
+    $running = $true
+} catch { }
+if ($running) {
+    Write-Host "O AI Video Studio ja esta aberto em outra janela. Abrindo o navegador..."
+    Start-Process $panelUrl
+    Start-Sleep -Seconds 5
+    exit 0
+}
+
+# O refino do rosto leva dezenas de minutos so na CPU, e o Windows nao conta CPU ocupada como uso:
+# sem isto, o computador suspende no meio (padrao do Windows 11: 3 a 5 min parado). Vale so enquanto
+# esta janela estiver aberta; fechar a tampa ou o botao de energia continuam funcionando.
+# Tambem desliga a Edicao Rapida desta janela: um clique nela pausava o estudio.
+try {
+    Add-Type -Namespace AIVS -Name Win32 -MemberDefinition @"
+[DllImport("kernel32.dll")] public static extern uint SetThreadExecutionState(uint esFlags);
+[DllImport("kernel32.dll")] public static extern IntPtr GetStdHandle(int nStdHandle);
+[DllImport("kernel32.dll")] public static extern bool GetConsoleMode(IntPtr hConsoleHandle, out uint lpMode);
+[DllImport("kernel32.dll")] public static extern bool SetConsoleMode(IntPtr hConsoleHandle, uint dwMode);
+"@
+    [AIVS.Win32]::SetThreadExecutionState([uint32]2147483649) | Out-Null  # ES_CONTINUOUS | ES_SYSTEM_REQUIRED
+    $consoleIn = [AIVS.Win32]::GetStdHandle(-10)
+    $mode = [uint32]0
+    if ([AIVS.Win32]::GetConsoleMode($consoleIn, [ref]$mode)) {
+        # Tira ENABLE_QUICK_EDIT_MODE (64); ENABLE_EXTENDED_FLAGS (128) faz a mudanca valer.
+        [AIVS.Win32]::SetConsoleMode($consoleIn, [uint32](($mode -band 4294967231) -bor 128)) | Out-Null
+    }
+} catch { }
+
+# WSL anterior ao 2.9.5: quando falta memoria, o Ubuntu derruba tudo que esta janela abriu.
+$wslVersion = $null
+try {
+    $first = & wsl.exe --version 2>$null | Select-Object -First 1
+    if ("$first" -match '(\d+)\.(\d+)\.(\d+)') {
+        $wslVersion = [version]("{0}.{1}.{2}" -f $Matches[1], $Matches[2], $Matches[3])
+    }
+} catch { }
+
 Start-Job -ScriptBlock {
     for ($i = 0; $i -lt 240; $i++) {
         try {
@@ -180,9 +224,28 @@ Start-Job -ScriptBlock {
     }
 } | Out-Null
 Write-Host "AI Video Studio rodando. Feche esta janela (ou Ctrl+C) para encerrar."
+Write-Host "Nao feche esta janela durante o refino do rosto. Enquanto ela estiver aberta, o computador nao"
+Write-Host "suspende sozinho (a tela ainda pode apagar). Em notebook, deixe na tomada."
 Write-Host "O navegador abre sozinho em http://localhost:3000 quando o estudio estiver pronto (1 a 2 minutos)."
 Write-Host "Se aparecer 'Failed to start the systemd user session', e so um aviso do WSL: pode ignorar."
+if ($wslVersion -and $wslVersion -lt [version]"2.9.5") {
+    Write-Host "Aviso: este WSL ($wslVersion) fecha o estudio inteiro quando falta memoria. Para atualizar," -ForegroundColor Yellow
+    Write-Host "feche esta janela, rode 'wsl --update' no PowerShell e abra o atalho de novo." -ForegroundColor Yellow
+}
 & wsl.exe -d $Distro -e bash -lc "cd ~/AI-Video-Studio && bash scripts/start.sh"
+$code = $LASTEXITCODE
+if ($code -eq 3) {
+    # start.sh: outro estudio ja estava aberto.
+    Start-Process $panelUrl
+    Start-Sleep -Seconds 5
+    exit 0
+}
+Write-Host ""
+Write-Host ("O AI Video Studio parou as {0} (codigo {1})." -f (Get-Date -Format "HH:mm"), $code) -ForegroundColor Yellow
+Write-Host "Se parou sozinho no meio de uma tarefa, a causa mais comum e falta de memoria:"
+Write-Host "veja 'Se o estudio fechar sozinho' no README. O registro do motor fica no Ubuntu, em"
+Write-Host "~/AI-Video-Studio/data/logs/motor.log"
+Read-Host "Pressione Enter para fechar esta janela"
 '@
 Set-Content -Path $launcher -Value $launcherBody.Replace("__DISTRO__", $Distro) -Encoding ASCII
 
