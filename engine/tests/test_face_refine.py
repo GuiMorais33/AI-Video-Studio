@@ -661,9 +661,35 @@ def test_restart_explains_the_interruption(settings):
                                 fps="1/1", num_frames=1, duration=1.0, has_audio=0)
     job = db.create_job(project["id"], "face_refine")
     db.update_job(job["id"], status="running")
+    kaggle = db.create_job(project["id"], "kaggle")
+    db.update_job(kaggle["id"], status="running")
     db = Database(settings.db_path)  # o motor subindo de novo
-    message = db.latest_jobs("p1")["face_refine"]["message"]
-    assert "janela fechada, falta de memória ou computador em suspensão" in message and "motor.log" in message
+    jobs = db.latest_jobs("p1")
+    message = jobs["face_refine"]["message"]
+    assert "janela fechada, falta de memória ou computador em suspensão" in message
+    assert "motor.anterior.log" in message  # o start.sh já guardou o registro da queda com esse nome
+    # A geração continua no Kaggle: mandar "rodar de novo" gastaria a cota de GPU à toa.
+    assert jobs["kaggle"]["status"] == "error" and "continua no Kaggle" in jobs["kaggle"]["message"]
+    assert "Não envie de novo" in jobs["kaggle"]["message"]
+
+
+def test_no_selection_while_refining(ff_settings, monkeypatch, fake_facefusion, tmp_path):
+    """Selecionar a pessoa noutro projeto durante o refino carregaria o vídeo no SAM 2 junto com o
+    FaceFusion: a combinação que estourava a memória."""
+    monkeypatch.setenv("FAKE_FACEFUSION_MODE", "hang")
+    with TestClient(create_app(ff_settings)) as client:
+        a = _portrait_project(client, tmp_path)
+        video = make_video(tmp_path / "outro.mp4", size="360x640")
+        with open(video, "rb") as f:
+            b = client.post("/projects", files={"file": ("outro.mp4", f)}).json()["id"]
+        with open(_video(tmp_path / "resultado.mp4", "464x832", 16), "rb") as f:
+            client.post(f"/projects/{a}/wan-result", files={"file": ("r.mp4", f)})
+        deadline = time.monotonic() + 30
+        while not (fake_facefusion / "pids").exists() and time.monotonic() < deadline:
+            time.sleep(0.1)
+        resp = client.post(f"/projects/{b}/clicks", json={"frame_idx": 0, "x": 180, "y": 320, "label": 1})
+        assert resp.status_code == 409 and "refino do rosto" in resp.json()["detail"], resp.text
+        assert client.app.state.session._loaded_project is None
 
 
 # --------------------------------------------------------------------------- instalação e vídeos antigos

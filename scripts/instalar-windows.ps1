@@ -240,6 +240,8 @@ if ($code -eq 3) {
     Start-Sleep -Seconds 5
     exit 0
 }
+# Parado, o computador ja pode suspender de novo enquanto a janela espera o Enter.
+try { [AIVS.Win32]::SetThreadExecutionState([uint32]2147483648) | Out-Null } catch { }  # so ES_CONTINUOUS
 Write-Host ""
 Write-Host ("O AI Video Studio parou as {0} (codigo {1})." -f (Get-Date -Format "HH:mm"), $code) -ForegroundColor Yellow
 Write-Host "Se parou sozinho no meio de uma tarefa, a causa mais comum e falta de memoria:"

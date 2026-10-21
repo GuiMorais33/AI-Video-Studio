@@ -108,7 +108,8 @@ export default function ProjectPage() {
     try {
       await action();
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      if (err instanceof EngineError && err.status === 0) setOffline(err.message);
+      else setError(err instanceof Error ? err.message : String(err));
     } finally {
       setBusy(null);
       await refresh();

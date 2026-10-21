@@ -303,6 +303,11 @@ def create_app(
     def add_click(project_id: str, body: ClickIn) -> dict[str, Any]:
         project = get_project(project_id)
         ensure_idle(project_id)
+        # O clique carrega o vídeo inteiro no SAM 2 (~2 GB): junto com o FaceFusion de outro projeto,
+        # é a combinação que estoura a memória do WSL.
+        if db.active_job(None, kinds=("face_refine",)) is not None:
+            raise HTTPException(409, "O refino do rosto está usando a memória do computador. Aguarde ele "
+                                     "terminar para selecionar a pessoa.")
         check_frame(project, body.frame_idx)
         if not (0 <= body.x < project["width"] and 0 <= body.y < project["height"]):
             raise HTTPException(400, "Clique fora do quadro.")

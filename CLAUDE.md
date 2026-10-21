@@ -38,14 +38,16 @@ bash scripts/tests/setup.test.sh && bash scripts/tests/torch-choice.test.sh  # s
     via `add_new_mask` com a máscara do disco.
   - Desfazer restaura o PNG salvo em `history/<click_id>.png`.
 - Tarefas longas (rastrear, exportar, refino do rosto) rodam em um único worker (`jobs.py`), com
-  progresso no SQLite. Cliques retornam 409 enquanto há tarefa ativa.
+  progresso no SQLite. Cliques retornam 409 enquanto há tarefa ativa no projeto, e em qualquer projeto
+  enquanto um refino do rosto roda (o clique carrega o vídeo no SAM 2).
 - Encerrar e cair:
   - `studio serve` trava `data/studio.lock` (um motor por pasta de dados; um segundo sai com
     código 3). Ao subir, o motor marca como interrompidas as tarefas que ficaram rodando.
   - O motor roda sem log de acesso. SIGHUP (janela fechada) e SIGTERM esperam até 10 s a tarefa
     parar e gravar "interrompido".
-  - `start.sh` põe motor e painel cada um no seu `setsid` e grava o motor em
-    `data/logs/motor.log`.
+  - `start.sh` pega `data/start.lock` e confere `data/studio.lock` antes de girar o registro
+    (`data/logs/motor.log`, o anterior em `motor.anterior.log`). Põe motor e painel cada um no seu
+    `setsid`.
   - O lançador do Windows (gerado pelo `instalar-windows.ps1`):
     - segura a suspensão e desliga a Edição Rápida;
     - não sobe um segundo estúdio;

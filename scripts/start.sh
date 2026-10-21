@@ -14,24 +14,34 @@ node_ok || { echo "Node.js 20+ não encontrado. Rode: bash scripts/setup.sh" >&2
 [[ -d "$ROOT/web/node_modules" ]] || { echo "Painel não instalado. Rode: bash scripts/setup.sh" >&2; exit 1; }
 
 ALREADY_RUNNING=3  # studio serve: outro motor já usa a mesma pasta de dados (engine/studio/cli.py)
-LOGS="${STUDIO_DATA_DIR:-$ROOT/data}/logs"
+DATA="${STUDIO_DATA_DIR:-$ROOT/data}"
+LOGS="$DATA/logs"
 mkdir -p "$LOGS"
 
-if "$ROOT/engine/.venv/bin/python" -c \
-  "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/health', timeout=3)" 2>/dev/null; then
+already_running() {
   echo "O AI Video Studio já está aberto (em outra janela ou terminal): use http://localhost:3000"
   exit "$ALREADY_RUNNING"
+}
+if "$ROOT/engine/.venv/bin/python" -c \
+  "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/health', timeout=3)" 2>/dev/null; then
+  already_running
 fi
+# O motor pode estar subindo (ou lento) e ainda não responder: as travas decidem. A do start.sh fica
+# presa enquanto ele roda; a do motor (studio.lock) pega um `studio serve` aberto à mão. Só depois
+# disso o registro anterior é guardado, para nunca girar o registro de um motor vivo.
+exec 9>"$DATA/start.lock"
+flock -n 9 || already_running
+flock -n "$DATA/studio.lock" true || already_running
 
 [[ -f "$LOGS/motor.log" ]] && mv -f "$LOGS/motor.log" "$LOGS/motor.anterior.log"
 echo "Registro do motor: $LOGS/motor.log"
 
 # Cada um no seu grupo de processos (setsid): Ctrl+C ou a janela fechando chegam só a este script,
 # que encerra os dois do jeito certo. O motor recebe um único SIGTERM e, antes de sair, para o
-# FaceFusion e grava na tarefa em andamento que ela foi interrompida.
-setsid "$STUDIO" serve --host 127.0.0.1 --port 8765 >>"$LOGS/motor.log" 2>&1 </dev/null &
+# FaceFusion e grava na tarefa em andamento que ela foi interrompida. Nenhum herda a trava (9>&-).
+setsid "$STUDIO" serve --host 127.0.0.1 --port 8765 >>"$LOGS/motor.log" 2>&1 </dev/null 9>&- &
 ENGINE_PID=$!
-setsid npm --prefix "$ROOT/web" run dev </dev/null &
+setsid npm --prefix "$ROOT/web" run dev </dev/null 9>&- &
 PANEL_PID=$!
 
 cleanup() {
@@ -50,8 +60,7 @@ wait -n "$ENGINE_PID" "$PANEL_PID" || code=$?
 echo
 if ! kill -0 "$ENGINE_PID" 2>/dev/null; then
   if ((code == ALREADY_RUNNING)); then
-    echo "O AI Video Studio já está aberto (em outra janela ou terminal): use http://localhost:3000"
-    exit "$ALREADY_RUNNING"
+    already_running
   elif ((code == 137)); then
     echo "O motor do estúdio foi encerrado à força pelo sistema, quase sempre por falta de memória."
     echo "Feche outros programas e abra o estúdio de novo. Veja \"Se o estúdio fechar sozinho\" no README."

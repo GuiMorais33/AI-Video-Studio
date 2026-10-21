@@ -59,7 +59,12 @@ CREATE INDEX IF NOT EXISTS jobs_by_project ON jobs(project_id, created_at);
 
 ACTIVE_JOB_STATUSES = ("queued", "running")
 INTERRUPTED = ("Interrompida: o estúdio fechou no meio da tarefa (janela fechada, falta de memória ou computador "
-               "em suspensão). Rode a tarefa de novo; o que aconteceu fica em data/logs/motor.log.")
+               "em suspensão). Rode a tarefa de novo; o registro da vez em que fechou fica em "
+               "data/logs/motor.anterior.log.")
+# A geração segue no Kaggle mesmo com o estúdio fechado: enviar de novo gastaria a cota de GPU à toa.
+INTERRUPTED_KAGGLE = ("O estúdio fechou durante a geração, mas ela continua no Kaggle. Não envie de novo: quando "
+                      "terminar, baixe o resultado.mp4 na aba Output do notebook ai-video-studio-wan-animate "
+                      "(kaggle.com/code) e use \"Importar resultado\". Só envie de novo se ela tiver falhado lá.")
 
 
 def _now() -> str:
@@ -78,8 +83,9 @@ class Database:
             conn.executescript(SCHEMA)
             # Tarefas que estavam rodando quando o motor parou não vão terminar.
             conn.execute(
-                "UPDATE jobs SET status = 'error', message = ?, updated_at = ? WHERE status IN ('queued', 'running')",
-                (INTERRUPTED, _now()),
+                "UPDATE jobs SET status = 'error', message = CASE WHEN kind = 'kaggle' THEN ? ELSE ? END, "
+                "updated_at = ? WHERE status IN ('queued', 'running')",
+                (INTERRUPTED_KAGGLE, INTERRUPTED, _now()),
             )
 
     @contextmanager

@@ -139,6 +139,7 @@ Check ($errors.Count -eq 0) "lancador gerado e PowerShell valido"
 $launcherText = Get-Content $launcher -Raw
 Check ($launcherText -notmatch '[^\x00-\x7F]') "lancador so com ASCII (PowerShell 5.1)"
 Check ($launcherText -match 'SetThreadExecutionState\(\[uint32\]2147483649\)') "segura a suspensao enquanto a janela esta aberta"
+Check ($launcherText -match '(?s)SetThreadExecutionState\(\[uint32\]2147483648\).*Read-Host') "solta a suspensao antes de esperar o Enter"
 Check ($launcherText -match 'SetConsoleMode\(\$consoleIn, \[uint32\]\(\(\$mode -band 4294967231\) -bor 128\)\)') "desliga a Edicao Rapida"
 
 function Invoke-Launcher([string]$name, [hashtable]$state) {

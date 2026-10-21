@@ -119,8 +119,9 @@ export interface Health {
 
 // Fetch falhou sem resposta: o motor caiu, ainda está subindo ou a janela do estúdio fechou.
 const OFFLINE =
-  `O motor do estúdio não respondeu em ${ENGINE_URL}. Se a janela do AI Video Studio fechou, abra o atalho de ` +
-  "novo (ou rode bash scripts/start.sh); se ela continua aberta, não abra outra: espere ele voltar.";
+  `O motor do estúdio não respondeu em ${ENGINE_URL}. Se a janela do AI Video Studio diz que ele parou (ou ` +
+  "fechou), aperte Enter nela e abra o atalho de novo (ou rode bash scripts/start.sh). Se ela ainda está abrindo " +
+  "o estúdio, espere.";
 
 export class EngineError extends Error {
   constructor(message: string, readonly status: number) {
