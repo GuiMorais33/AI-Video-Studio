@@ -62,7 +62,8 @@ com o mesmo token), o estúdio avisa e não envia outro.
 | Texto | umT5 em fp16; depois é liberado da memória |
 | Geração | `WanAnimatePipeline` do diffusers 0.41.0 com: transformer GGUF Q4_K_M, LoRA lightx2v (6 passos), LoRA de reiluminação, offload em blocos, fp16 |
 | Composição | O personagem gerado é colado sobre o vídeo **original**, só dentro da máscara e com borda suave: o fundo fica intacto (o Wan redesenha o quadro inteiro e o fundo sairia levemente diferente) |
-| Saída | `resultado.mp4` (composto, no tamanho da geração, ex.: 464×832), `relatorio.json` (tempos, VRAM, avisos, erro) e prévias em `depuracao/`: `wan_bruto.mp4` (o Wan puro), pose, rosto e máscara |
+| Ampliação | Real-ESRGAN x2plus (ampliação de imagem comum, não troca rosto), misturado meio a meio com a ampliação simples: puro, ele apaga sardas e "pinta" a pele. Se falhar, o resultado sai no tamanho da geração, com aviso |
+| Saída | `resultado.mp4` (composto e ampliado, ex.: 928×1664), `relatorio.json` (tempos, VRAM, avisos, erro) e prévias em `depuracao/`: `wan_bruto.mp4` (o Wan puro, no tamanho da geração), pose, rosto e máscara |
 
 O notebook **não** troca o rosto: isso é feito no seu computador, logo depois (próxima seção).
 
@@ -79,19 +80,23 @@ computador, e nunca no Kaggle.
 
 Assim que o vídeo do Kaggle é importado, o estúdio começa o refino sozinho:
 
-1. só a área do personagem vai para o FaceFusion 3.9.1 (fora da máscara fica preto). Ele troca
+1. só a área do personagem vai para o FaceFusion 3.9.1 (fora da máscara fica preto), ampliada para
+   pelo menos 2x o tamanho da geração: com o rosto maior, ele acerta mais detalhe no mesmo tempo. Ele troca
    todos os rostos que achar ali, mas só volta para o vídeo o rosto que fica na silhueta da pessoa
    rastreada. Quem está ao lado ou atrás, mesmo encostado nela (ex.: a mão do entrevistador perto do
    rosto da entrevistada), não tem o rosto trocado;
 2. o rosto de cada quadro vira o das **fotos do rosto** (hyperswap com reforço de detalhe 512, todas
    as fotos combinadas numa identidade) e a nitidez é restaurada (GFPGAN), respeitando mãos e cabelo
-   na frente do rosto;
+   na frente do rosto. Trocador e força do restaurador: os da [comparação de ajustes](#comparar-ajustes-do-rosto)
+   (padrão: hyperswap 1a, restaurador 80%);
 3. o rosto refinado é colado de volta com borda suave e estável de um quadro para o outro, **só nos
    quadros em que o rosto está de frente até três quartos**. De perfil ou de costas, o FaceFusion
    estraga a troca (rachaduras no rosto, boca fora do lugar, olho na bochecha), então ali fica o
    rosto gerado pelo Wan. A troca entra e sai em 3 quadros, sem piscar;
-4. o vídeo vai para o tamanho dos Reels (**1080×1920** em pé, 1920×1080 deitado) e recebe o áudio
-   original.
+4. a pessoa vai sobre o **seu vídeo original em resolução cheia** (fora da área do personagem, o
+   fundo é o que você filmou, não uma cópia reduzida e esticada), no tamanho dos Reels (**1080×1920**
+   em pé, 1920×1080 deitado), com o áudio original. Se o original não bater com o pacote (projeto
+   antigo, outro vídeo), o estúdio volta a ampliar o vídeo do Wan inteiro e avisa na etapa 4.
 
 Enquanto o refino roda, `wan_final.mp4` já existe sem ele. Quando termina, o arquivo é trocado pela
 versão refinada.
@@ -106,6 +111,19 @@ versão refinada.
 - **Escolha vídeos em que a pessoa olha para a câmera** (de frente ou em três quartos) na maior parte
   do tempo. Num vídeo com a pessoa de perfil o tempo todo (ex.: entrevistador virado para o
   entrevistado), o refino quase não entra e o rosto fica o do Wan.
+
+### Comparar ajustes do rosto
+
+Que trocador e que força do restaurador ficam mais naturais depende do seu rosto e do vídeo. Na
+etapa 4, **Comparar ajustes do rosto**:
+
+- acha um trecho de ~1,5 s em que o rosto está de frente;
+- testa o hyperswap 1a, 1b e 1c, cada um sem restaurador, com 40% e o seu ajuste atual;
+- mostra tudo lado a lado, ampliado no rosto, junto com o rosto sem refino.
+
+Escolha o que ficou mais natural e mais parecido com você e clique em **Refazer o refino do rosto**.
+Leva cerca de 10 min na CPU, e a primeira vez baixa ~0,8 GB de modelos (hyperswap 1b e 1c). A escolha
+fica no projeto e vale para os próximos refinos; um vídeo novo do Kaggle apaga só a comparação.
 
 O refino fica de fora, com aviso na etapa 4 e o vídeo sem ele, quando:
 - as fotos não têm um rosto humano detectável (personagem robô, de capacete);
@@ -126,6 +144,7 @@ O log completo fica em `data/projects/<projeto>/exports/facefusion_rosto.log`.
 | umT5 + CLIP + VAE (repositório diffusers oficial) | ~13 GB |
 | ViTPose-H wholebody (repositório oficial) | ~2,5 GB |
 | LoRAs (lightx2v + relight, Kijai) | ~1 GB |
+| Real-ESRGAN x2plus (GitHub da xinntao) | 64 MB |
 
 **Tempo medido numa T4 (09/10/2026):** 34 min para um clipe de 4,8 s a 16 fps (77 quadros,
 464×832). Com as 30 h semanais, dá para uns 50 clipes por semana.
@@ -140,6 +159,9 @@ O log completo fica em `data/projects/<projeto>/exports/facefusion_rosto.log`.
 | VAE (codificar o fundo e decodificar o vídeo) e o resto da geração | ~6 min |
 
 Memória: pico de 12,7 GB na GPU 0 com o umT5 e de 8,3 GB na geração (a T4 tem 14,6 GB).
+
+A ampliação com o Real-ESRGAN (11/2026) entrou depois dessa medição e ainda não foi medida numa T4.
+Na CPU ela leva ~45 s por quadro; na GPU deve ficar em poucos minutos para o clipe inteiro (estimativa).
 
 ## Qualidade e dicas
 

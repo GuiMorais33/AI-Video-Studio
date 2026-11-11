@@ -12,6 +12,7 @@ computador, depois que o vídeo volta do Kaggle (face_refine.py).
 from __future__ import annotations
 
 import json
+import logging
 import math
 import os
 import re
@@ -25,14 +26,14 @@ from typing import Any, Callable
 import numpy as np
 from PIL import Image, ImageOps
 
-from . import __version__, media
+from . import __version__, finish, media
 from .masks import load_mask
 
 PACKAGE_FORMAT = 1
 # Área em pixels de cada resolução de geração (mesma regra "por área" do pré-processamento oficial).
 RESOLUTIONS = {"480p": 832 * 480, "720p": 1280 * 720}
 WAN_FILES = ("wan_package.zip", "wan_input.mp4", "wan_result.mp4", "wan_final.mp4", "comparativo.mp4",
-             "facefusion_rosto.log")
+             "facefusion_rosto.log", "comparar_rosto.mp4", "comparar_rosto.png", "facefusion_comparar.log")
 MAX_REFERENCE_BYTES = 25 * 1024 * 1024
 # Fotos extras do rosto, usadas pelo refino do rosto (FaceFusion) neste computador.
 FACES_DIR = "faces"
@@ -43,6 +44,9 @@ FACE_NAME_RE = re.compile(r"\d{2}\.png")
 SEGMENT_FRAMES = 77
 SEGMENT_OVERLAP = 1
 MAX_TRIM_FRAMES = 8
+
+
+log = logging.getLogger(__name__)
 
 
 class WanError(ValueError):
@@ -261,7 +265,7 @@ def reels_size(width: int, height: int) -> tuple[int, int]:
 # Cores do vídeo final: os players tratam vídeo HD sem marcação como BT.709, mas o vídeo do Wan sai
 # em BT.601 (o padrão do ffmpeg ao converter de RGB). Sem converter, verdes e vermelhos mudam até
 # ~25 níveis no celular. "auto" lê a marcação de quem tem (o vídeo do FaceFusion sai em BT.709).
-BT709_OUTPUT = ["-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709"]
+BT709_OUTPUT = list(media.BT709_TAGS)
 
 
 def cover_filter(width: int, height: int) -> str:
@@ -282,15 +286,23 @@ def import_result(project: dict[str, Any], root: Path, upload: Path) -> str:
         raise WanError(f"O arquivo enviado não é um vídeo válido: {exc}") from exc
     exports.mkdir(parents=True, exist_ok=True)
     os.replace(upload, exports / "wan_result.mp4")
-    # O refino anterior era de outro vídeo.
-    (exports / "face_refine.json").unlink(missing_ok=True)
+    # O refino e a comparação de ajustes anteriores eram de outro vídeo.
+    for name in ("face_refine.json", "comparar_rosto.json", "comparar_rosto.mp4", "comparar_rosto.png"):
+        (exports / name).unlink(missing_ok=True)
     width, height = finish_result(project, root, exports / "wan_result.mp4")
-    return f"Resultado importado: {info.width}x{info.height}, {info.duration:.1f}s (final em {width}x{height})."
+    note = finish.read_info(root) or {}
+    background = (" Fundo: o seu vídeo original em resolução cheia." if note.get("fundo") == "original"
+                  else f" Fundo ampliado do vídeo do Wan ({note.get('motivo', 'sem o original')}).")
+    return f"Resultado importado: {info.width}x{info.height}, {info.duration:.1f}s (final em {width}x{height}).{background}"
 
 
 def finish_result(project: dict[str, Any], root: Path, video: Path) -> tuple[int, int]:
     """Acabamento de um vídeo do Wan (refinado ou não): wan_final.mp4 no tamanho dos Reels com o
-    áudio original e comparativo.mp4 (vídeo do pacote | final, mesmo enquadramento). Devolve o tamanho."""
+    áudio original e comparativo.mp4 (vídeo do pacote | final, mesmo enquadramento). Devolve o tamanho.
+
+    A pessoa vai sobre o vídeo original em resolução cheia (finish.py). Quando não dá (projeto antigo
+    sem o original, pacote de outro clipe), o vídeo do Wan inteiro é ampliado, como antes. O que
+    aconteceu fica em exports/final.json."""
     exports = root / "exports"
     info = media.probe(video)
     width, height = reels_size(info.width, info.height)
@@ -299,15 +311,29 @@ def finish_result(project: dict[str, Any], root: Path, video: Path) -> tuple[int
 
     ff = media.ffmpeg_bin()
     final_tmp = exports / "wan_final.tmp.mp4"
-    cmd = [ff, "-y", "-v", "error", "-i", str(video)]
-    if has_audio:
-        cmd += ["-i", str(clip), "-map", "0:v:0", "-map", "1:a:0?", "-c:a", "aac", "-b:a", "160k", "-shortest"]
+    silent: Path | None = exports / "wan_final.video.tmp.mp4"
+    try:
+        note = finish.compose(project, root, video, silent, (width, height))
+    except (finish.Skipped, media.MediaError, OSError, ValueError, KeyError, zipfile.BadZipFile) as exc:
+        if not isinstance(exc, finish.Skipped):
+            log.exception("Falha ao montar o final sobre o vídeo original")
+        reason = str(exc) if isinstance(exc, finish.Skipped) else f"erro ao montar sobre o original ({type(exc).__name__})"
+        note = {"fundo": "reduzido", "motivo": reason, "tamanho": [width, height]}
+        silent = None
+    audio = (["-i", str(clip), "-map", "0:v:0", "-map", "1:a:0?", "-c:a", "aac", "-b:a", "160k", "-shortest"]
+             if has_audio else ["-map", "0:v:0"])
+    if silent is not None:
+        try:
+            media.run([ff, "-y", "-v", "error", "-i", str(silent), *audio, "-c:v", "copy",
+                       "-movflags", "+faststart", str(final_tmp)])
+        finally:
+            silent.unlink(missing_ok=True)
     else:
-        cmd += ["-map", "0:v:0"]
-    cmd += ["-vf", cover_filter(width, height), "-c:v", "libx264", "-preset", "medium", "-crf", "16",
-            "-pix_fmt", "yuv420p", *BT709_OUTPUT, "-movflags", "+faststart", str(final_tmp)]
-    media.run(cmd)
+        media.run([ff, "-y", "-v", "error", "-i", str(video), *audio, "-vf", cover_filter(width, height),
+                   "-c:v", "libx264", "-preset", "medium", "-crf", "16", "-pix_fmt", "yuv420p", *BT709_OUTPUT,
+                   "-movflags", "+faststart", str(final_tmp)])
     os.replace(final_tmp, exports / "wan_final.mp4")
+    finish.write_info(root, note)
 
     # Comparativo: vídeo do pacote | final, lado a lado na mesma altura (até 960 px) e no fps do final.
     wan_input = exports / "wan_input.mp4"

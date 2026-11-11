@@ -12,8 +12,10 @@ imagem de referência e job.json) e:
 4. gera com o WanAnimatePipeline do diffusers: transformer GGUF + LoRAs de poucos
    passos + offload em blocos, em fp16 (a T4 não tem bf16 nativo);
 5. cola o personagem gerado sobre o vídeo original (fundo intacto, borda suave);
-6. grava resultado.mp4 no tamanho da geração (ex.: 464x832), prévias de depuração e
-   relatorio.json em /kaggle/working.
+6. amplia 2x com o Real-ESRGAN x2plus (ampliação de imagem comum, não troca rosto), para o
+   refino do rosto e o acabamento no computador terem mais detalhe;
+7. grava resultado.mp4 (ex.: 928x1664), prévias de depuração e relatorio.json em
+   /kaggle/working.
 
 O refino do rosto com as fotos e o ajuste ao tamanho dos Reels (1080x1920) rodam depois, no
 computador do usuário, pelo estúdio: o Kaggle bloqueia ferramentas de troca de rosto, e nenhuma
@@ -26,6 +28,7 @@ que os testes rodam este fluxo inteiro na CPU com modelos minúsculos.
 from __future__ import annotations
 
 import gc
+import hashlib
 import json
 import math
 import os
@@ -35,6 +38,7 @@ import subprocess
 import sys
 import time
 import traceback
+import urllib.request
 import zipfile
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
@@ -86,6 +90,16 @@ class Config:
     # O vídeo sai no tamanho da geração; o refino do rosto e o tamanho dos Reels ficam com o estúdio.
     composite_background: bool = True
     composite_feather: int = 6
+    # Ampliação do resultado com o Real-ESRGAN x2plus (BSD-3, xinntao/Real-ESRGAN v0.2.1). É uma
+    # ampliação de imagem comum. Se falhar, o resultado sai no tamanho da geração, com aviso.
+    # 1 desliga.
+    upscale: int = 2
+    upscale_model: str = "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.1/RealESRGAN_x2plus.pth"
+    upscale_sha256: str | None = "49fafd45f8fd7aa8d31ab2a22d14d91b536c34494a5cfe31eb5d89c2fa266abb"
+    # Quanto do Real-ESRGAN entra na mistura com a ampliação simples (Lanczos). Puro (1.0), ele deixa
+    # olhos e cabelo nítidos, mas apaga sardas e textura da pele ("pintado"). Com 0.5 fica nítido e
+    # ainda natural (comparado num rosto real contra o original em 1080p, 11/2026).
+    upscale_strength: float = 0.5
     # Pastas
     input_root: str = "/kaggle/input"
     scratch: str = "/kaggle/tmp"
@@ -543,6 +557,123 @@ def composite_background(generated, originals: list[np.ndarray], masks: list[np.
     return out
 
 
+# --------------------------------------------------------------------------- ampliação (Real-ESRGAN)
+
+def fetch_url(url: str, cache: Path, sha256: str | None = None, retry_wait: float = 10) -> str:
+    """Arquivo local (testes) ou baixado de `url` para o cache, conferindo o SHA-256."""
+    if Path(url).exists():
+        return url
+    dest = cache / "urls" / url.rstrip("/").rsplit("/", 1)[-1]
+
+    def ok(path: Path) -> bool:
+        return path.exists() and (sha256 is None or hashlib.sha256(path.read_bytes()).hexdigest() == sha256)
+
+    if ok(dest):
+        return str(dest)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dest.with_name(dest.name + ".part")
+    for attempt in range(3):
+        try:
+            urllib.request.urlretrieve(url, tmp)
+            if not ok(tmp):
+                raise ValueError(f"SHA-256 diferente do esperado em {dest.name}")
+            os.replace(tmp, dest)
+            return str(dest)
+        except Exception:
+            tmp.unlink(missing_ok=True)
+            if attempt == 2:
+                raise
+            time.sleep(retry_wait * (attempt + 1))
+    raise AssertionError("inalcançável")
+
+
+def load_rrdbnet(path: str):
+    """RRDBNet do Real-ESRGAN (a arquitetura do basicsr, sem depender dele), montada a partir do
+    próprio arquivo de pesos: escala (x1/x2/x4), largura e número de blocos vêm do formato das chaves."""
+    torch = _torch()
+    nn, F = torch.nn, torch.nn.functional
+    ckpt = torch.load(path, map_location="cpu", weights_only=True)
+    state = ckpt.get("params_ema") or ckpt.get("params") or ckpt
+
+    class RDB(nn.Module):
+        def __init__(self, nf: int, gc: int):
+            super().__init__()
+            for i in range(5):
+                setattr(self, f"conv{i + 1}", nn.Conv2d(nf + i * gc, nf if i == 4 else gc, 3, 1, 1))
+
+        def forward(self, x):
+            feats = [x]
+            for i in range(1, 5):
+                feats.append(F.leaky_relu(getattr(self, f"conv{i}")(torch.cat(feats, 1)), 0.2))
+            return self.conv5(torch.cat(feats, 1)) * 0.2 + x
+
+    class RRDB(nn.Module):
+        def __init__(self, nf: int, gc: int):
+            super().__init__()
+            self.rdb1, self.rdb2, self.rdb3 = RDB(nf, gc), RDB(nf, gc), RDB(nf, gc)
+
+        def forward(self, x):
+            return self.rdb3(self.rdb2(self.rdb1(x))) * 0.2 + x
+
+    class RRDBNet(nn.Module):
+        def __init__(self, in_ch: int, nf: int, blocks: int, gc: int):
+            super().__init__()
+            self.scale = {3: 4, 12: 2, 48: 1}[in_ch]
+            self.conv_first = nn.Conv2d(in_ch, nf, 3, 1, 1)
+            self.body = nn.Sequential(*[RRDB(nf, gc) for _ in range(blocks)])
+            self.conv_body = nn.Conv2d(nf, nf, 3, 1, 1)
+            self.conv_up1 = nn.Conv2d(nf, nf, 3, 1, 1)
+            self.conv_up2 = nn.Conv2d(nf, nf, 3, 1, 1)
+            self.conv_hr = nn.Conv2d(nf, nf, 3, 1, 1)
+            self.conv_last = nn.Conv2d(nf, 3, 3, 1, 1)
+
+        def forward(self, x):
+            if self.scale < 4:  # x2/x1: a entrada vira canais (pixel unshuffle), como no basicsr
+                x = F.pixel_unshuffle(x, 4 // self.scale)
+            feat = self.conv_first(x)
+            feat = feat + self.conv_body(self.body(feat))
+            feat = F.leaky_relu(self.conv_up1(F.interpolate(feat, scale_factor=2, mode="nearest")), 0.2)
+            feat = F.leaky_relu(self.conv_up2(F.interpolate(feat, scale_factor=2, mode="nearest")), 0.2)
+            return self.conv_last(F.leaky_relu(self.conv_hr(feat), 0.2))
+
+    first = state["conv_first.weight"]
+    blocks = 1 + max(int(k.split(".")[1]) for k in state if k.startswith("body."))
+    net = RRDBNet(first.shape[1], first.shape[0], blocks, state["body.0.rdb1.conv1.weight"].shape[0])
+    net.load_state_dict(state, strict=True)
+    return net.eval()
+
+
+def upscale_frames(frames: list[np.ndarray], cfg: Config, device: str, cache: Path,
+                   on_frame: Callable[[int], None] = lambda i: None) -> list[np.ndarray]:
+    """Quadros (uint8) ampliados `cfg.upscale` vezes com o Real-ESRGAN, um por vez, em fp16 na GPU."""
+    torch = _torch()
+    net = load_rrdbnet(fetch_url(cfg.upscale_model, cache, cfg.upscale_sha256))
+    dtype = torch.float16 if device.startswith("cuda") else torch.float32
+    net = net.to(device=device, dtype=dtype)
+    out = []
+    try:
+        with torch.inference_mode():
+            for i, frame in enumerate(frames):
+                height, width = frame.shape[:2]
+                x = torch.from_numpy(np.array(frame, np.uint8)).to(device).permute(2, 0, 1)[None].to(dtype) / 255.0
+                y = net(x).clamp_(0, 1)[0].permute(1, 2, 0).float().cpu().numpy()
+                img = (y * 255.0).round().astype(np.uint8)
+                size = (width * cfg.upscale, height * cfg.upscale)
+                if (img.shape[1], img.shape[0]) != size:  # modelo x4 pedindo 2x, por exemplo
+                    img = np.asarray(Image.fromarray(img).resize(size, Image.LANCZOS))
+                if cfg.upscale_strength < 1:
+                    plain = np.asarray(Image.fromarray(frame).resize(size, Image.LANCZOS), np.float32)
+                    img = (plain + cfg.upscale_strength * (img.astype(np.float32) - plain)).round().astype(np.uint8)
+                out.append(img)
+                on_frame(i)
+    finally:
+        del net
+        gc.collect()
+        if device.startswith("cuda"):
+            torch.cuda.empty_cache()
+    return out
+
+
 # --------------------------------------------------------------------------- saída
 
 def write_video(frames: list[np.ndarray] | np.ndarray, fps: str, path: Path, crf: int = 16) -> None:
@@ -653,11 +784,25 @@ def main(cfg: Config | None = None) -> dict:
         del result
         if cfg.composite_background:
             with report.etapa("composicao"):
-                progress(0.96, "Colando o personagem sobre o vídeo original")
+                progress(0.955, "Colando o personagem sobre o vídeo original")
                 base = composite_background(base, frames, gen_masks, cfg.composite_feather)
+        if cfg.upscale > 1:
+            with report.etapa("ampliacao"):
+                progress(0.96, "Ampliando 2x com o Real-ESRGAN")
+                try:
+                    base = upscale_frames(
+                        base, cfg, device, cache,
+                        on_frame=lambda i: progress(0.96 + 0.015 * (i + 1) / len(base),
+                                                    f"Ampliando {i + 1}/{len(base)} (Real-ESRGAN)"))
+                    report.data["ampliacao"] = {"modelo": Path(cfg.upscale_model).name, "escala": cfg.upscale,
+                                                "forca": cfg.upscale_strength,
+                                                "tamanho": [int(base[0].shape[1]), int(base[0].shape[0])]}
+                except Exception as exc:  # opcional: não joga fora a geração
+                    report.aviso(f"Ampliação (Real-ESRGAN) ignorada, resultado no tamanho da geração: "
+                                 f"{type(exc).__name__}: {exc}")
         with report.etapa("exportacao"):
-            # No tamanho da geração e sem refino do rosto: o estúdio refina o rosto com as fotos e
-            # ajusta ao tamanho dos Reels no computador do usuário.
+            # Sem refino do rosto: o estúdio refina o rosto com as fotos, cola sobre o vídeo original
+            # em resolução cheia e ajusta ao tamanho dos Reels no computador do usuário.
             write_video(base, job["fps"], out_dir / "resultado.mp4")
             progress(0.98, "Gravando as prévias de depuração")
             write_video([np.asarray(p) for p in poses], job["fps"], debug / "pose.mp4", crf=23)

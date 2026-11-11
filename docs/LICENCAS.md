@@ -18,6 +18,7 @@ marcados como **Não** precisariam ser trocados ou licenciados. Isto não é aco
 | diffusers, transformers, peft, accelerate | Apache-2.0 | Sim | |
 | YOLOv10 (detector do pré-processamento oficial) | AGPL-3.0 | Evitado | Não precisamos: a caixa da pessoa vem da máscara do SAM 2.1, que acerta mais |
 | ComfyUI | GPL-3.0 | Sim, como ferramenta | Não usado |
+| Real-ESRGAN (RRDBNet e pesos RealESRGAN_x2plus, release v0.2.1) | BSD-3-Clause | Sim | Ampliação 2x do resultado no notebook; a arquitetura foi reescrita no notebook, sem o basicsr |
 
 ## Refino do rosto (FaceFusion 3.9.1, padrão, roda no computador)
 
@@ -28,7 +29,8 @@ notebook.
 | Componente | Licença | Uso comercial | Papel |
 |---|---|---|---|
 | FaceFusion (código) | OpenRAIL-AS | Com restrições de uso | Roda no computador, na CPU, versão fixa (commit `72470819`), instalado pelo `scripts/setup.sh` |
-| hyperswap_1a_256 | ResearchRAIL | **Não** | Troca o rosto (256 px, com reforço de detalhe 512) |
+| hyperswap_1a_256 | ResearchRAIL | **Não** | Troca o rosto (256 px, com reforço de detalhe 512); padrão |
+| hyperswap_1b_256, hyperswap_1c_256 | ResearchRAIL | **Não** | Alternativas da mesma família, testadas na comparação de ajustes do rosto |
 | arcface_w600k_r50 (InsightFace) | Não comercial | **Não** | Lê a identidade das fotos; todos os trocadores dependem dele |
 | gfpgan_1.4 | Apache-2.0 | Sim | Restaura a nitidez do rosto |
 | yolo_face, xseg_1 | GPL-3.0 | Sim, como ferramenta | Detecta o rosto e o que está na frente dele (mãos, cabelo) |

@@ -6,16 +6,18 @@ a troca do rosto saiu do notebook e roda aqui, num processo à parte com o Pytho
 
 1. As máscaras do pacote passam pelo mesmo processamento do notebook (dilatação 7x7 x3 e blocos
    de 16) e são ajustadas ao tamanho do vídeo (escala para cobrir + recorte central).
-2. Só a área do personagem vai para o FaceFusion (fora da máscara, preto). Ele troca todos os
+2. Só a área do personagem vai para o FaceFusion (fora da máscara, preto), ampliada 2x quando o
+   vídeo é pequeno (work_size: o rosto maior sai mais nítido, no mesmo tempo). Ele troca todos os
    rostos que achar ali, e só volta para o vídeo o que cai na silhueta da pessoa rastreada: quem
    está colado nela (ao lado, atrás) nunca tem o rosto trocado, e o do personagem nunca perde a
    vez para um rosto maior.
-3. O FaceFusion troca o rosto pelo das fotos (hyperswap) e restaura a nitidez (GFPGAN). O filtro
-   de conteúdo dele fica sempre ligado.
+3. O FaceFusion troca o rosto pelo das fotos (hyperswap) e restaura a nitidez (GFPGAN), com o
+   trocador e a força escolhidos na comparação de ajustes (rosto_ajustes.json; face_compare.py). O
+   filtro de conteúdo dele fica sempre ligado.
 4. Só a região que o FaceFusion mudou (o rosto) e que cai na silhueta da pessoa rastreada volta
    para o vídeo, com borda suave e estável entre quadros vizinhos; o resto do quadro continua o do
-   Wan, sem a recompressão do FaceFusion. O acabamento (tamanho dos Reels, áudio original,
-   comparativo) é refeito.
+   Wan, sem a recompressão do FaceFusion. O acabamento é refeito: a pessoa sobre o vídeo original em
+   resolução cheia (finish.py), tamanho dos Reels, áudio original e comparativo.
 
 Se o FaceFusion não conseguir (foto sem rosto humano, filtro de conteúdo, travou), o wan_final.mp4
 fica sem o refino e a tarefa termina com um aviso.
@@ -45,6 +47,7 @@ from PIL import Image, ImageFilter
 
 from . import media, wan
 from .config import Settings
+from .masks import COMPOSITE_FEATHER, blockify, dilate, generation_mask  # noqa: F401 (blockify: testes)
 
 # Os mesmos parâmetros da etapa "rosto" que o notebook do Kaggle usava antes do bloqueio.
 FACE_SWAPPER_MODEL = "hyperswap_1a_256"
@@ -53,11 +56,6 @@ FACE_SWAPPER_PIXEL_BOOST = "512x512"
 FACE_SWAPPER_WEIGHT = 0.75
 FACE_ENHANCER_MODEL = "gfpgan_1.4"
 FACE_ENHANCER_BLEND = 80
-# Máscara igual à da geração (pré-processamento oficial do Wan + blocos do template ComfyUI).
-MASK_KERNEL = 7
-MASK_ITERATIONS = 3
-MASK_BLOCK = 16
-COMPOSITE_FEATHER = 6
 # Onde a diferença entre o vídeo do FaceFusion e o do Wan passa disto (média dos canais, 0-255), o
 # FaceFusion mudou o quadro de verdade: é o rosto. Abaixo disso é só a recompressão do vídeo dele.
 CHANGE_THRESHOLD = 10
@@ -77,10 +75,22 @@ MIN_LANDMARK_SCORE = 0.5
 # Trechos com troca mais curtos que isto ficam de fora (trocar e destrocar pisca); cada trecho entra
 # e sai em 3 quadros (60%, 80%, 100%).
 MIN_RUN = 3
+# O FaceFusion acerta mais detalhe com o rosto maior. Num vídeo em pé de corpo inteiro em 464x832, o
+# rosto tem uns 65 px: o rosto de 512 px que ele gera é espremido nisso e depois esticado até
+# 1080x1920. Ampliado 2x antes, o rosto sai sem serrilhado nos olhos e na boca, com o mesmo tempo e a
+# mesma memória (medido na CPU, 51 quadros: 194 s e 5,2 GB em 464x832; 195 s e 5,1 GB em 928x1664),
+# porque ele trabalha num recorte do rosto de tamanho fixo. Vídeo já grande (o notebook amplia com o
+# Real-ESRGAN) vai como está.
+WORK_UPSCALE_MAX_SIDE = 1100
 PROBE_SCRIPT = Path(__file__).with_name("facefusion_probe.py")
 # Modelos principais: sem eles, o 1º refino baixa ~1,7 GB.
 MODEL_FILES = ("hyperswap_1a_256.onnx", "gfpgan_1.4.onnx")
 RESULT_FILE = "face_refine.json"
+# Trocador e força do restaurador escolhidos para o projeto (comparação de ajustes), na raiz dele.
+SETTINGS_FILE = "rosto_ajustes.json"
+# hyperswap 1a/1b/1c: mesma família e tamanho (~400 MB cada); as fontes divergem sobre qual fica mais
+# natural, então a comparação mostra os três com o rosto da pessoa.
+SWAPPERS = ("hyperswap_1a_256", "hyperswap_1b_256", "hyperswap_1c_256")
 LOG_FILE = "facefusion_rosto.log"
 
 FACE_PROGRESS_RE = re.compile(r"processing:\s+(\d+)%")
@@ -176,6 +186,30 @@ def read_result(root: Path) -> dict[str, Any] | None:
         return None
 
 
+def face_settings(root: Path) -> dict[str, Any]:
+    """Ajustes do refino deste projeto: {"trocador", "restaurador"} (padrão: hyperswap 1a, GFPGAN 80%)."""
+    try:
+        data = json.loads((root / SETTINGS_FILE).read_text())
+        swapper, blend = data["trocador"], int(data["restaurador"])
+        if swapper in SWAPPERS and 0 <= blend <= 100:
+            return {"trocador": swapper, "restaurador": blend}
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
+    return {"trocador": FACE_SWAPPER_MODEL, "restaurador": FACE_ENHANCER_BLEND}
+
+
+def save_face_settings(root: Path, swapper: str, blend: int) -> dict[str, Any]:
+    if swapper not in SWAPPERS:
+        raise FaceRefineError(f"Trocador desconhecido: {swapper}.")
+    if not 0 <= blend <= 100:
+        raise FaceRefineError("A força do restaurador vai de 0 a 100.")
+    data = {"trocador": swapper, "restaurador": int(blend)}
+    tmp = root / (SETTINGS_FILE + ".tmp")
+    tmp.write_text(json.dumps(data, indent=2))
+    os.replace(tmp, root / SETTINGS_FILE)
+    return data
+
+
 def face_sources(root: Path) -> list[Path]:
     """Fotos que definem o rosto: as do rosto (vários ângulos, o FaceFusion combina todas) ou,
     sem elas, a imagem do personagem."""
@@ -186,29 +220,17 @@ def face_sources(root: Path) -> list[Path]:
 
 # --------------------------------------------------------------------------- máscaras
 
-def dilate(mask: np.ndarray, kernel: int, iterations: int) -> np.ndarray:
-    """Igual a cv2.dilate(mask, ones((k, k)), iterations): quadrado de lado (k-1)*it+1."""
-    radius = (kernel - 1) // 2 * iterations
-    out = mask.astype(bool)
-    for axis in (0, 1):
-        padded = np.pad(out, [(radius, radius) if a == axis else (0, 0) for a in (0, 1)])
-        acc = np.zeros_like(out)
-        size = out.shape[axis]
-        for shift in range(2 * radius + 1):
-            acc |= padded[shift:shift + size] if axis == 0 else padded[:, shift:shift + size]
-        out = acc
-    return out
+def work_size(size: tuple[int, int]) -> tuple[int, int]:
+    """Tamanho em que o vídeo vai para o FaceFusion: 2x quando o maior lado cabe em WORK_UPSCALE_MAX_SIDE."""
+    factor = 2 if max(size) <= WORK_UPSCALE_MAX_SIDE else 1
+    return size[0] * factor, size[1] * factor
 
 
-def blockify(mask: np.ndarray, block: int) -> np.ndarray:
-    """Cada bloco block x block com algum pixel da máscara vira bloco cheio (contorno em degraus)."""
-    if block <= 1:
-        return mask.astype(bool)
-    h, w = mask.shape
-    ph, pw = -h % block, -w % block
-    padded = np.pad(mask.astype(bool), ((0, ph), (0, pw)))
-    grid = padded.reshape(padded.shape[0] // block, block, padded.shape[1] // block, block).any(axis=(1, 3))
-    return np.kron(grid, np.ones((block, block), bool))[:h, :w]
+def _resized(frame: np.ndarray, size: tuple[int, int]) -> np.ndarray:
+    """Quadro no tamanho de trabalho (Lanczos); igual se já estiver nele."""
+    if (frame.shape[1], frame.shape[0]) == size:
+        return frame
+    return np.asarray(Image.fromarray(frame).resize(size, Image.Resampling.LANCZOS))
 
 
 def fit_cover(img: Image.Image, size: tuple[int, int], resample: Image.Resampling) -> Image.Image:
@@ -237,7 +259,8 @@ class PackageMasks:
             names = set(self._zip.namelist())
             if self.count < 1 or any(f"masks/{i:05d}.png" not in names for i in range(self.count)):
                 raise ValueError("máscaras faltando no pacote")
-            # Quanto o tamanho da geração foi ampliado para cobrir o vídeo (1 no fluxo normal).
+            # Quanto o tamanho da geração foi ampliado até o de trabalho (2 no fluxo normal: o vídeo vai
+            # ampliado para o FaceFusion; work_size).
             self.scale = max(size[0] / int(job["width"]), size[1] / int(job["height"]))
         except Exception:
             self._zip.close()
@@ -246,8 +269,7 @@ class PackageMasks:
     def _processed(self, idx: int) -> Image.Image:
         with Image.open(io.BytesIO(self._zip.read(f"masks/{idx:05d}.png"))) as img:
             mask = np.asarray(img.convert("L")) > 127
-        mask = blockify(dilate(mask, MASK_KERNEL, MASK_ITERATIONS), MASK_BLOCK)
-        return Image.fromarray(mask.astype(np.uint8) * 255)
+        return Image.fromarray(generation_mask(mask).astype(np.uint8) * 255)
 
     def binary(self, idx: int) -> np.ndarray:
         """Área do personagem (bool, altura x largura)."""
@@ -319,20 +341,25 @@ def face_alpha(face: np.ndarray, base: np.ndarray, scale: float = 1.0, person: n
 
 # --------------------------------------------------------------------------- FaceFusion
 
-def facefusion_command(settings: Settings, sources: list[Path], target: Path, output: Path,
-                       work: Path) -> list[str]:
-    """headless-run do FaceFusion na CPU: troca o rosto principal de cada quadro pelo das fotos e
-    restaura a nitidez. Mesmos processadores e opções da etapa "rosto" do notebook."""
+def facefusion_command(settings: Settings, sources: list[Path], target: Path, output: Path, work: Path, *,
+                       swapper: str = FACE_SWAPPER_MODEL, enhancer_blend: int = FACE_ENHANCER_BLEND,
+                       processors: tuple[str, ...] | None = None) -> list[str]:
+    """headless-run do FaceFusion na CPU: troca o rosto de cada quadro pelo das fotos (`swapper`) e
+    restaura a nitidez (GFPGAN com força `enhancer_blend`; 0 = sem restaurador). `processors` força
+    só uma parte (a comparação roda a troca e o restaurador separados)."""
+    if processors is None:
+        processors = ("face_swapper", "face_enhancer") if enhancer_blend > 0 else ("face_swapper",)
+    options: list[str] = []
+    if "face_swapper" in processors:
+        options += ["--face-swapper-model", swapper, "--face-swapper-pixel-boost", FACE_SWAPPER_PIXEL_BOOST,
+                    "--face-swapper-weight", str(FACE_SWAPPER_WEIGHT)]
+    if "face_enhancer" in processors:
+        options += ["--face-enhancer-model", FACE_ENHANCER_MODEL, "--face-enhancer-blend", str(enhancer_blend)]
     return [
         str(settings.facefusion_python_path), "facefusion.py", "headless-run",
         "-s", *(str(p) for p in sources), "-t", str(target), "-o", str(output),
         "--temp-path", str(work / "ff-temp"), "--jobs-path", str(work / "ff-jobs"),
-        "--processors", "face_swapper", "face_enhancer",
-        "--face-swapper-model", FACE_SWAPPER_MODEL,
-        "--face-swapper-pixel-boost", FACE_SWAPPER_PIXEL_BOOST,
-        "--face-swapper-weight", str(FACE_SWAPPER_WEIGHT),
-        "--face-enhancer-model", FACE_ENHANCER_MODEL,
-        "--face-enhancer-blend", str(FACE_ENHANCER_BLEND),
+        "--processors", *processors, *options,
         "--face-detector-model", "yolo_face", "--face-detector-size", "640x640", "--face-detector-score", "0.5",
         "--face-landmarker-model", "2dfan4", "--face-landmarker-score", "0.5",
         # Todos os rostos da área do personagem: quem fica é decidido na colagem (só a pessoa
@@ -412,14 +439,15 @@ class FaceFusionRun:
 
 def run_facefusion(settings: Settings, sources: list[Path], target: Path, output: Path, work: Path,
                    log_path: Path, on_stage: Callable[[str, int], None] = lambda stage, pct: None,
-                   stop: threading.Event | None = None) -> FaceFusionRun:
+                   stop: threading.Event | None = None, **options: Any) -> FaceFusionRun:
     """Roda o FaceFusion no seu próprio grupo de processos e grava o log inteiro em `log_path`.
+    `options` vão para facefusion_command (trocador, força do restaurador, processadores).
 
     O grupo inteiro (FaceFusion + curl/ffmpeg que ele abre) é encerrado se ficar
     `facefusion_idle_timeout_s` sem escrever nada, ou quando `stop` liga (motor encerrando).
     Não há limite de tempo total: na CPU o refino é longo, mas escreve progresso a cada quadro.
     """
-    command = facefusion_command(settings, sources, target, output, work)
+    command = facefusion_command(settings, sources, target, output, work, **options)
     # CONDA_READY: o FaceFusion não tenta reiniciar dentro do conda. Sem buffer: o log chega na hora.
     env = {**os.environ, "CONDA_READY": "1", "PYTHONUNBUFFERED": "1"}
     output.unlink(missing_ok=True)
@@ -527,15 +555,16 @@ def _even(frame: np.ndarray, width: int, height: int) -> np.ndarray:
 
 def write_target(result: Path, masks: PackageMasks, target: Path, info: media.VideoInfo,
                  size: tuple[int, int], progress: Callable[[float], None], stop: threading.Event | None) -> int:
-    """Vídeo que vai para o FaceFusion: o personagem e, fora da máscara, preto. Devolve os quadros."""
+    """Vídeo que vai para o FaceFusion: o personagem e, fora da máscara, preto, no tamanho de trabalho
+    (`masks.size`, ampliado de `size`). Devolve os quadros."""
     width, height = size
-    writer = media.FrameWriter(target, width, height, info.fps, crf=12)
+    writer = media.FrameWriter(target, *masks.size, info.fps, crf=12)
     count = 0
     try:
         with media.FrameReader(result, info.width, info.height) as reader:
             while (frame := reader.read()) is not None and count < masks.count:
                 _check_stop(stop)
-                writer.write(_even(frame, width, height) * masks.binary(count)[..., None])
+                writer.write(_resized(_even(frame, width, height), masks.size) * masks.binary(count)[..., None])
                 count += 1
                 progress(count / masks.count)
     except BaseException:
@@ -574,18 +603,24 @@ def probe_faces(settings: Settings, video: Path, work: Path, stop: threading.Eve
     return frames if isinstance(frames, list) else None
 
 
+def tracked_face(faces: list[dict], mask: np.ndarray | None) -> dict | None:
+    """O rosto da pessoa rastreada num quadro: o maior com o centro dentro da silhueta dela."""
+    chosen, best = None, -1.0
+    for face in faces:
+        x0, y0, x1, y1 = face["box"]
+        cx, cy = int((x0 + x1) / 2), int((y0 + y1) / 2)
+        inside = mask is None or (0 <= cy < mask.shape[0] and 0 <= cx < mask.shape[1] and mask[cy, cx])
+        if inside and (x1 - x0) * (y1 - y0) > best:
+            chosen, best = face, (x1 - x0) * (y1 - y0)
+    return chosen
+
+
 def pose_weights(faces: list[list[dict]], person: Callable[[int], np.ndarray | None], frames: int) -> list[float]:
     """Quanto da troca entra em cada quadro (0..1): só onde o rosto da pessoa rastreada está de frente
     até três quartos, em trechos de pelo menos MIN_RUN quadros, com entrada e saída suaves."""
     good = []
     for t in range(frames):
-        mask, chosen = person(t), None
-        for face in faces[t] if t < len(faces) else []:
-            x0, y0, x1, y1 = face["box"]
-            cx, cy = int((x0 + x1) / 2), int((y0 + y1) / 2)
-            inside = mask is None or (0 <= cy < mask.shape[0] and 0 <= cx < mask.shape[1] and mask[cy, cx])
-            if inside and (chosen is None or (x1 - x0) * (y1 - y0) > (chosen["box"][2] - chosen["box"][0]) * (chosen["box"][3] - chosen["box"][1])):
-                chosen = face
+        chosen = tracked_face(faces[t] if t < len(faces) else [], person(t))
         good.append(chosen is not None and chosen["landmarker"] >= MIN_LANDMARK_SCORE
                     and abs(chosen["r5"] - 0.5) <= MAX_TURN)
     # Um quadro ruim isolado no meio de quadros bons entra (o rastreador do FaceFusion o preenche).
@@ -616,12 +651,13 @@ def paste_back(result: Path, refined: Path, masks: PackageMasks, output: Path, i
                stop: threading.Event | None, weights: list[float] | None = None) -> bool:
     """Rosto refinado só onde o FaceFusion mudou o quadro e dentro da silhueta da pessoa rastreada
     (borda suave), na proporção de `weights` (ângulo do rosto em cada quadro); no resto, o resultado
-    do Wan intacto. False se o FaceFusion devolveu outro número de quadros.
+    do Wan intacto (ampliado ao tamanho de trabalho, `masks.size`, que é o da saída). False se o
+    FaceFusion devolveu outro número de quadros.
 
     A área colada de cada quadro vale também para os vizinhos (máximo de 3 quadros seguidos): a
     borda do rosto não treme de um quadro para o outro."""
     width, height = size
-    writer = media.FrameWriter(output, width, height, info.fps, crf=12)
+    writer = media.FrameWriter(output, *masks.size, info.fps, crf=12)
     Entry = tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, int]  # (base, rosto, mudou, pessoa, quadro)
 
     def write(previous: Entry | None, current: Entry, following: Entry | None) -> None:
@@ -636,13 +672,13 @@ def paste_back(result: Path, refined: Path, masks: PackageMasks, output: Path, i
     count = 0
     try:
         with media.FrameReader(result, info.width, info.height) as base_reader, \
-                media.FrameReader(refined, width, height) as face_reader:
+                media.FrameReader(refined, *masks.size) as face_reader:
             while True:
                 _check_stop(stop)
                 base, face = base_reader.read(), face_reader.read()
                 if base is None or face is None or count >= frames:
                     break
-                base = _even(base, width, height)
+                base = _resized(_even(base, width, height), masks.size)
                 # Fora da máscara o FaceFusion só viu preto: ali vale o quadro do Wan, sem escurecer a borda.
                 face = np.where(masks.binary(count)[..., None], face, base)
                 person = masks.person(count)
@@ -700,6 +736,7 @@ def refine(project: dict[str, Any], root: Path, settings: Settings, progress: Pr
     if free is not None and free < need:
         raise FaceRefineError(low_memory_message(free, need))
     previous = read_result(root)
+    choice = face_settings(root)
     started = time.monotonic()
     info = media.probe(result)
     size = (info.width - info.width % 2, info.height - info.height % 2)
@@ -709,7 +746,7 @@ def refine(project: dict[str, Any], root: Path, settings: Settings, progress: Pr
     masks: PackageMasks | None = None
     package = exports / "wan_package.zip"
     try:
-        masks = PackageMasks(package, size) if package.exists() else None
+        masks = PackageMasks(package, work_size(size)) if package.exists() else None
     except (OSError, ValueError, KeyError, zipfile.BadZipFile):
         masks = None
     whole_frame = "o refino usa o quadro inteiro (troca o maior rosto de cada quadro)"
@@ -761,7 +798,8 @@ def refine(project: dict[str, Any], root: Path, settings: Settings, progress: Pr
                 target = result
             progress(0.05, "Abrindo o FaceFusion (pode levar alguns minutos)")
             face_video = tmp / "rosto.mp4"
-            run = run_facefusion(settings, copies, target, face_video, tmp, log_path, on_stage, stop)
+            run = run_facefusion(settings, copies, target, face_video, tmp, log_path, on_stage, stop,
+                                 swapper=choice["trocador"], enhancer_blend=choice["restaurador"])
             if run.stopped:
                 raise FaceRefineError(STOPPED)
             reason = failure_reason(run, settings)
@@ -785,8 +823,9 @@ def refine(project: dict[str, Any], root: Path, settings: Settings, progress: Pr
                 progress(0.89, "Colando o rosto refinado no vídeo")
                 refined = tmp / "composto.mp4"
                 out = media.probe(face_video)
-                if (out.width, out.height) != size:
-                    reason = f"o FaceFusion devolveu o vídeo em {out.width}x{out.height} (esperado {size[0]}x{size[1]})"
+                if (out.width, out.height) != masks.size:
+                    reason = (f"o FaceFusion devolveu o vídeo em {out.width}x{out.height} "
+                              f"(esperado {masks.size[0]}x{masks.size[1]})")
                 elif not paste_back(result, face_video, masks, refined, info, size, frames,
                                     lambda f: progress(0.89 + 0.04 * f), stop, weights):
                     reason = f"o FaceFusion devolveu {media.count_frames(face_video)} de {frames} quadros"
@@ -804,9 +843,10 @@ def refine(project: dict[str, Any], root: Path, settings: Settings, progress: Pr
     seconds = round(time.monotonic() - started, 1)
     data: dict[str, Any] = {
         "ok": reason is None, "fotos": len(sources), "segundos": seconds, "quadros": frames,
-        "mascara": masks is not None, "avisos": warnings, "trocador": FACE_SWAPPER_MODEL,
+        "mascara": masks is not None, "avisos": warnings, "trocador": choice["trocador"],
+        "restaurador_forca": choice["restaurador"],
         "quadros_refinados": None if weights is None else sum(w > 0 for w in weights),
-        "restaurador": FACE_ENHANCER_MODEL, "provedor": "cpu", "threads": settings.facefusion_threads,
+        "restaurador": FACE_ENHANCER_MODEL if choice["restaurador"] > 0 else None, "provedor": "cpu", "threads": settings.facefusion_threads,
         "concluido_em": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }
     if reason is not None:

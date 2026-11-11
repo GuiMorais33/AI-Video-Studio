@@ -14,6 +14,7 @@ matplotlib onnx onnxruntime e o clone do Wan2.2 (variável WAN_DIR ou download p
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 import subprocess
@@ -33,6 +34,7 @@ from PIL import Image  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import aivs_wan  # noqa: E402
+from test_upscale import tiny_rrdbnet  # noqa: E402
 
 WAN_COMMIT = aivs_wan.Config.wan_commit
 
@@ -302,6 +304,11 @@ def package(tmp_path_factory) -> Path:
 
 
 def _config(tmp_path: Path, tiny: dict, wan_dir: Path, input_root: Path, pose: Path, **kw) -> aivs_wan.Config:
+    upscaler = tmp_path / "realesrgan-minusculo.pth"
+    if not upscaler.exists():
+        tiny_rrdbnet(upscaler)
+    kw.setdefault("upscale_model", str(upscaler))
+    kw.setdefault("upscale_sha256", None)
     return aivs_wan.Config(
         repo=str(tiny["repo"]), gguf_file=str(tiny["gguf"]),
         loras=((str(tiny["lightx2v"]), "lightx2v", 1.0, True), (str(tiny["relight"]), "relight", 1.0, False)),
@@ -345,9 +352,11 @@ def test_main_end_to_end_on_cpu(tmp_path, tiny_models, tiny_vitpose, wan_dir, pa
     assert saved["geracao"]["segment_frames"] == 17 and saved["geracao"]["segments"] == 1
     job = saved["job"]
     assert (job["width"], job["height"]) == (832, 464)
-    # Tamanho da geração: o refino do rosto e o tamanho dos Reels ficam com o estúdio, no computador do usuário.
+    # Ampliado 2x (Real-ESRGAN); o refino do rosto e o tamanho dos Reels ficam com o estúdio.
     video = _probe(out / "resultado.mp4")
-    assert (video["width"], video["height"]) == (832, 464)
+    assert (video["width"], video["height"]) == (1664, 928)
+    assert saved["ampliacao"] == {"modelo": "realesrgan-minusculo.pth", "escala": 2, "forca": 0.5,
+                                  "tamanho": [1664, 928]}
     assert video["avg_frame_rate"] == job["fps"] == "16/1"
     assert int(video["nb_read_frames"]) == job["num_frames"] == 16
     for name in ("wan_bruto.mp4", "pose.mp4", "rosto.mp4", "mascara.mp4"):
@@ -355,7 +364,8 @@ def test_main_end_to_end_on_cpu(tmp_path, tiny_models, tiny_vitpose, wan_dir, pa
     assert _probe(out / "depuracao" / "rosto.mp4")["width"] == 512  # recorte do rosto que o Wan usa
     assert not {"rosto", "nitidez", "saida"} & saved.keys()
     assert set(saved["etapas"]) == {f"{n}_s" for n in ("ambiente", "pacote", "mascaras", "pose_rosto", "texto",
-                                                      "modelo", "geracao", "composicao", "exportacao")}
+                                                      "modelo", "geracao", "composicao", "ampliacao",
+                                                      "exportacao")}
     stdout = capsys.readouterr().out.splitlines()
     assert report["run_id"] == "r123" and stdout.index("AIVS_RUN r123") < min(
         i for i, l in enumerate(stdout) if l.startswith("AIVS_PROGRESS"))  # o estúdio ignora progresso antes disso
@@ -369,7 +379,12 @@ def test_main_end_to_end_on_cpu(tmp_path, tiny_models, tiny_vitpose, wan_dir, pa
     with zipfile.ZipFile(package) as zf:
         (tmp_path / "pacote.mp4").write_bytes(zf.read("video.mp4"))
     original = _first_frame(tmp_path / "pacote.mp4")
-    composed = _first_frame(out / "resultado.mp4")
+    # A rede minúscula (pesos aleatórios) não amplia de verdade: a composição é conferida com a
+    # ampliação desligada, e a saída ampliada só pelo tamanho (acima).
+    cfg_1x = dataclasses.replace(cfg, upscale=1, output=str(tmp_path / "working-1x"))
+    assert aivs_wan.main(cfg_1x)["ok"] is True
+    assert "ampliacao_s" not in json.loads((tmp_path / "working-1x" / "relatorio.json").read_text())["etapas"]
+    composed = _first_frame(tmp_path / "working-1x" / "resultado.mp4")
     raw = _first_frame(out / "depuracao" / "wan_bruto.mp4")
     assert composed.shape == original.shape == raw.shape
     corner = (slice(0, 48), slice(0, 96))

@@ -80,6 +80,16 @@ bash scripts/tests/setup.test.sh && bash scripts/tests/torch-choice.test.sh  # s
     De perfil o FaceFusion estraga a troca: `facefusion_probe.py` (roda com o Python do FaceFusion)
     mede o ângulo do rosto em cada quadro, e só entram os quadros de frente até três quartos, em
     trechos de 3+ quadros com rampa de entrada e saída.
-    Grava `wan_final.mp4` em 1080x1920 com o áudio.
+    Troca o rosto no vídeo ampliado 2x (`work_size`): medido, mesmo tempo e memória, rosto mais
+    nítido. Trocador (hyperswap 1a/1b/1c) e força do GFPGAN vêm de `rosto_ajustes.json`, escolhidos
+    na comparação (`face_compare.py`): um trecho de ~1,5 s com o rosto de frente, só a troca e só o
+    restaurador (força 100) por trocador; as outras forças saem da mistura linear dos dois.
+  - O final (`finish.py`, chamado por `wan.finish_result`) cola a pessoa sobre o `source.*` em
+    resolução cheia: mesmos quadros (corte/fps do clipe + índices do pacote), mesmo enquadramento
+    (`wan_geometry`) e as cores lidas como o clipe chega ao Wan (`media.CLIP_COLORS`, BT.601).
+    Cada quadro é conferido contra o `wan_input.mp4`; se não bater, volta a ampliar o vídeo do Wan e
+    grava o motivo em `exports/final.json`. Sai `wan_final.mp4` em 1080x1920 com o áudio.
+  - O notebook amplia o resultado 2x com o Real-ESRGAN x2plus (RRDBNet reescrito no notebook,
+    pesos do GitHub com SHA-256 conferido), 50% misturado com Lanczos; se falhar, sai 1x com aviso.
   - O FaceFusion local pede Ubuntu 24.04 (Python 3.11+, FFmpeg 5.1+). O `setup.sh` grava
     `.venv/.aivs-ok` só quando a instalação termina; sem ele, o motor não o considera instalado.

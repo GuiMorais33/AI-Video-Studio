@@ -7,9 +7,11 @@ import shutil
 import subprocess
 from dataclasses import dataclass
 from fractions import Fraction
+from io import BytesIO
 from pathlib import Path
 
 import numpy as np
+from PIL import Image
 
 
 class MediaError(RuntimeError):
@@ -135,15 +137,39 @@ def count_frames(path: Path) -> int:
     return int(out) if out.isdigit() else 0
 
 
+# Marcação das cores do vídeo final (BT.709, o que os players supõem em vídeo HD).
+BT709_TAGS = ("-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709")
+# Lê os quadros com as cores do jeito que o clipe chega ao Wan: os JPEG do clipe são lidos como
+# BT.601, seja qual for a marcação do vídeo (medido: diferença de ~1 nível com isto; ~6 lendo como
+# BT.709 um vídeo de celular marcado BT.709). Sem isso, o fundo e a pessoa gerada não batem.
+CLIP_COLORS = "scale=in_color_matrix=bt601:flags=accurate_rnd+full_chroma_int"
+
+
+def first_frame_size(path: Path, start: float = 0.0) -> tuple[int, int]:
+    """Largura x altura do quadro como o ffmpeg entrega (já com a rotação de celular aplicada)."""
+    out = subprocess.run(
+        [ffmpeg_bin(), "-v", "error", "-ss", f"{start:.3f}", "-i", str(path), "-map", "0:v:0", "-frames:v", "1",
+         "-f", "image2pipe", "-c:v", "png", "-"], capture_output=True,
+    )
+    if out.returncode != 0 or not out.stdout:
+        raise MediaError(f"Não foi possível ler um quadro de {path.name}.")
+    with Image.open(BytesIO(out.stdout)) as img:
+        return img.size
+
+
 class FrameReader:
     """Lê um vídeo quadro a quadro (RGB uint8, altura x largura x 3) por um pipe do ffmpeg,
     sem carregar o vídeo inteiro na memória (15 s em 1080x1920 passariam de 2 GB)."""
 
-    def __init__(self, path: Path, width: int, height: int):
+    def __init__(self, path: Path, width: int, height: int, *, input_args: tuple[str, ...] = (),
+                 vf: str | None = None):
+        """`input_args` vão antes do `-i` (ex.: -ss/-t); `vf`, os filtros. A saída tem de ter `width` x `height`."""
         self.shape = (height, width, 3)
         self._size = width * height * 3
+        filters = ["-vf", vf] if vf else []
         self._proc = subprocess.Popen(
-            [ffmpeg_bin(), "-v", "error", "-i", str(path), "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
+            [ffmpeg_bin(), "-v", "error", *input_args, "-i", str(path), "-map", "0:v:0", *filters,
+             "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
         )
 
@@ -171,12 +197,16 @@ class FrameWriter:
     """Grava quadros RGB uint8 num MP4 (H.264) por um pipe do ffmpeg."""
 
     def __init__(self, path: Path, width: int, height: int, fps: Fraction, *, crf: int = 16,
-                 preset: str = "veryfast"):
+                 preset: str = "veryfast", bt709: bool = False):
+        """`bt709`: converte e marca as cores como BT.709 (o que os celulares supõem em vídeo HD).
+        Sem ele, sai em BT.601 sem marcação, como os vídeos intermediários sempre saíram."""
         path.parent.mkdir(parents=True, exist_ok=True)
         self.path = path
+        colors = ["-vf", "scale=out_color_matrix=bt709:flags=accurate_rnd+full_chroma_int",
+                  *BT709_TAGS] if bt709 else []
         self._proc = subprocess.Popen(
             [ffmpeg_bin(), "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{width}x{height}",
-             "-framerate", fps_arg(fps), "-i", "-", "-c:v", "libx264", "-preset", preset, "-crf", str(crf),
+             "-framerate", fps_arg(fps), "-i", "-", *colors, "-c:v", "libx264", "-preset", preset, "-crf", str(crf),
              "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(path)],
             stdin=subprocess.PIPE, stderr=subprocess.PIPE,
         )

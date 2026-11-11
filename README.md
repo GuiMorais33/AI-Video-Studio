@@ -40,7 +40,8 @@ O estúdio roda no Ubuntu dentro do WSL2, como a Meta recomenda para o SAM 2. Vo
 o navegador do Windows.
 
 **Espaço livre no disco C:** pelo menos 7 GB (incluindo ~2,2 GB do refino do rosto: o FaceFusion e
-os modelos dele, baixados no primeiro uso). Para usar uma placa NVIDIA no SAM 2 são 14 GB, porque
+os modelos dele, baixados no primeiro uso; a comparação de ajustes do rosto baixa mais ~0,8 GB na
+primeira vez). Para usar uma placa NVIDIA no SAM 2 são 14 GB, porque
 o PyTorch com GPU tem ~7 GB. Com menos que isso, o instalador usa a versão só-CPU (~200 MB), que
 funciona igual, só que mais devagar.
 
@@ -146,9 +147,11 @@ Clone em `~/`, não em `/mnt/c/...`: o disco do Windows visto pelo WSL é bem ma
    - envie de 3 a 6 **fotos do rosto** (de frente, meio perfil, sorrindo);
    - clique em **Gerar pacote para o Kaggle** e depois em **Gerar no Kaggle**;
    - quando o vídeo volta, o estúdio troca o rosto pelo das fotos **no seu computador** (FaceFusion,
-     na CPU; o Kaggle bloqueia ferramentas de troca de rosto) e entrega o vídeo em 1080×1920 com o
-     áudio original e um comparativo lado a lado;
-   - trocou as fotos do rosto? **Refazer o refino do rosto**, sem gerar no Kaggle de novo.
+     na CPU; o Kaggle bloqueia ferramentas de troca de rosto) e cola a pessoa sobre o **seu vídeo
+     original em resolução cheia**, em 1080×1920, com o áudio original e um comparativo lado a lado;
+   - **Comparar ajustes do rosto** mostra, num trecho curto, o rosto com cada trocador e força do
+     restaurador, lado a lado; escolha o mais natural;
+   - trocou as fotos do rosto ou o ajuste? **Refazer o refino do rosto**, sem gerar no Kaggle de novo.
 
    Passo a passo e modo manual em [docs/KAGGLE.md](docs/KAGGLE.md).
 

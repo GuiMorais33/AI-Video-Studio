@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import json
 import shutil
 import subprocess
+import zipfile
 from pathlib import Path
 
+import numpy as np
 import pytest
+from PIL import Image
 
 from studio.config import Settings
 
@@ -48,3 +52,29 @@ def settings(tmp_path: Path) -> Settings:
 @pytest.fixture
 def video(tmp_path: Path) -> Path:
     return make_video(tmp_path / "input.mp4")
+
+
+def read_frame(path: Path, idx: int = 0) -> np.ndarray:
+    """Quadro `idx` de um vídeo (RGB float32)."""
+    out = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height",
+                          "-of", "csv=p=0", str(path)], check=True, capture_output=True, text=True).stdout
+    width, height = (int(v) for v in out.strip().split(",")[:2])
+    raw = subprocess.run(["ffmpeg", "-v", "error", "-i", str(path), "-vf", f"select=eq(n\\,{idx})", "-frames:v", "1",
+                          "-f", "rawvideo", "-pix_fmt", "rgb24", "-"], check=True, capture_output=True).stdout
+    return np.frombuffer(raw, np.uint8).reshape(height, width, 3).astype(np.float32)
+
+
+def source_view(root: Path, package_idx: int, size: tuple[int, int]) -> np.ndarray:
+    """O que o vídeo final mostra do original no quadro `package_idx` do pacote: o mesmo quadro do clipe,
+    o recorte do pacote (wan_geometry) e o corte central para cobrir `size`, nas coordenadas do original."""
+    with zipfile.ZipFile(root / "exports" / "wan_package.zip") as zf:
+        job = json.loads(zf.read("job.json"))
+    geo, gw, gh = job["geometry"], job["width"], job["height"]
+    src = read_frame(next(root.glob("source*")), job["source_frame_indices"][package_idx])
+    sh, sw = src.shape[:2]
+    s = max(size[0] / gw, size[1] / gh)
+    x0, y0 = (gw - size[0] / s) / 2, (gh - size[1] / s) / 2
+    fx, fy = sw / geo["scaled_width"], sh / geo["scaled_height"]
+    box = ((x0 + geo["crop_x"]) * fx, (y0 + geo["crop_y"]) * fy,
+           (gw - x0 + geo["crop_x"]) * fx, (gh - y0 + geo["crop_y"]) * fy)
+    return np.asarray(Image.fromarray(src.astype(np.uint8)).resize(size, Image.Resampling.LANCZOS, box=box), np.float32)

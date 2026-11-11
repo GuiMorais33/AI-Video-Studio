@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import {
   KAGGLE_GUIDE_URL,
   MAX_FACE_PHOTOS,
+  type FaceSwapper,
   type KaggleAccount,
   type KaggleStatus,
   type Project,
@@ -45,6 +46,11 @@ export function WanPanel({ project, locked, run }: Props) {
   const lastFaceJob = project.jobs.face_refine;
   const faceRefine = project.face_refine;
   const refined = faceRefine.result;
+  const compareJob = project.active_job?.kind === "face_compare" ? project.active_job : null;
+  const lastCompareJob = project.jobs.face_compare;
+  const compare = faceRefine.compare;
+  const faceSettings = faceRefine.settings;
+  const finalInfo = project.wan_final_info;
   // Muda quando o pacote é refeito, um resultado é importado, o Kaggle devolve um vídeo ou o refino
   // do rosto termina (o wan_final.mp4 e o comparativo.mp4 são refeitos).
   const version = [
@@ -294,6 +300,7 @@ export function WanPanel({ project, locked, run }: Props) {
                 <a href={fileUrl(project.id, "wan_final.mp4", version)}>wan_final.mp4</a>{" "}
                 <span className="muted small">
                   {refined?.ok ? "rosto refinado, " : ""}tamanho dos Reels + áudio original
+                  {finalInfo?.fundo === "original" ? ", sobre o seu vídeo em resolução cheia" : ""}
                 </span>
               </li>
               <li>
@@ -301,6 +308,12 @@ export function WanPanel({ project, locked, run }: Props) {
                 <span className="muted small">antes | depois</span>
               </li>
             </ul>
+          )}
+
+          {finalInfo?.fundo === "reduzido" && (
+            <p className="status warn">
+              O fundo do vídeo final saiu ampliado do vídeo do Wan, não do seu vídeo original: {finalInfo.motivo}.
+            </p>
           )}
 
           <h3>Refino do rosto</h3>
@@ -328,7 +341,8 @@ export function WanPanel({ project, locked, run }: Props) {
               {lastFaceJob?.status === "error" && <p className="status warn">Falhou: {lastFaceJob.message}</p>}
               {refined?.ok && (
                 <p className="status ok">
-                  Rosto refinado com {refined.fotos} foto(s) em {formatDuration(refined.segundos)}.
+                  Rosto refinado com {refined.fotos} foto(s) em {formatDuration(refined.segundos)}
+                  {refined.trocador ? ` (${settingsLabel(refined.trocador, refined.restaurador_forca ?? 80)})` : ""}.
                   {refined.avisos?.map((aviso) => ` Aviso: ${aviso}.`).join("")}
                 </p>
               )}
@@ -354,6 +368,83 @@ export function WanPanel({ project, locked, run }: Props) {
               </button>
             </>
           )}
+
+          <h4>Comparar ajustes do rosto</h4>
+          <p className="muted small">
+            Ajuste atual: {settingsLabel(faceSettings.trocador, faceSettings.restaurador)}. A comparação testa os três
+            trocadores e a força do restaurador num trecho de ~1,5 s com o rosto de frente, lado a lado e ampliado no
+            rosto (cerca de 10 min na CPU; a primeira vez baixa ~0,8 GB de modelos).
+          </p>
+          {compareJob ? (
+            <div className="job">
+              <div className="job-head">
+                <span>{compareJob.message ?? "Comparando os ajustes…"}</span>
+                <span>{Math.round(compareJob.progress * 100)}%</span>
+              </div>
+              <div className="bar"><div style={{ width: `${compareJob.progress * 100}%` }} /></div>
+            </div>
+          ) : (
+            <>
+              {lastCompareJob?.status === "error" && (
+                <p className="status warn">
+                  Comparação falhou: {lastCompareJob.message}
+                  {wan["facefusion_comparar.log"] && (
+                    <>
+                      {" "}
+                      <a href={fileUrl(project.id, "facefusion_comparar.log", lastCompareJob.updated_at)}>Log</a>
+                    </>
+                  )}
+                </p>
+              )}
+              <button
+                disabled={locked || !faceRefine.installed || !wan["wan_result.mp4"] || Boolean(remoteJob)}
+                onClick={() => run("Iniciando a comparação…", () => engine.faceCompare(project.id))}
+              >
+                {compare ? "Comparar de novo" : "Comparar ajustes do rosto"}
+              </button>
+            </>
+          )}
+          {compare && wan["comparar_rosto.mp4"] && (
+            <div className="face-compare">
+              <video
+                src={fileUrl(project.id, "comparar_rosto.mp4", compare.concluido_em)}
+                autoPlay
+                loop
+                muted
+                playsInline
+                controls
+              />
+              <p className="muted small">
+                Qual ficou mais natural e mais parecido com você? Escolha e depois clique em &quot;Refazer o refino do
+                rosto&quot;.{" "}
+                <a href={fileUrl(project.id, "comparar_rosto.png", compare.concluido_em)} target="_blank" rel="noreferrer">
+                  Ver um quadro parado
+                </a>
+              </p>
+              <div className="choices">
+                {compare.variantes.map((variant) => {
+                  if (variant.trocador === null || variant.restaurador === null) return null;
+                  const { trocador, restaurador } = variant;
+                  const chosen = trocador === faceSettings.trocador && restaurador === faceSettings.restaurador;
+                  return (
+                    <button
+                      key={variant.id}
+                      className={chosen ? "primary" : undefined}
+                      disabled={locked || chosen}
+                      onClick={() =>
+                        run("Salvando o ajuste do rosto…", () =>
+                          engine.saveFaceSettings(project.id, { trocador, restaurador }),
+                        )
+                      }
+                    >
+                      {settingsLabel(trocador, restaurador)}
+                      {chosen ? " (escolhido)" : ""}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
         </div>
       </div>
 
@@ -362,6 +453,16 @@ export function WanPanel({ project, locked, run }: Props) {
       )}
     </section>
   );
+}
+
+const SWAPPER_NAMES: Record<FaceSwapper, string> = {
+  hyperswap_1a_256: "hyperswap 1a",
+  hyperswap_1b_256: "hyperswap 1b",
+  hyperswap_1c_256: "hyperswap 1c",
+};
+
+function settingsLabel(swapper: FaceSwapper, enhancer: number): string {
+  return `${SWAPPER_NAMES[swapper]}, ${enhancer > 0 ? `restaurador ${enhancer}%` : "sem restaurador"}`;
 }
 
 function formatDuration(seconds: number): string {

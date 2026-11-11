@@ -7,7 +7,7 @@ export type JobStatus = "queued" | "running" | "done" | "error";
 export interface Job {
   id: string;
   project_id: string;
-  kind: "track" | "export" | "wan_package" | "kaggle" | "face_refine";
+  kind: "track" | "export" | "wan_package" | "kaggle" | "face_refine" | "face_compare";
   status: JobStatus;
   progress: number;
   message: string | null;
@@ -62,7 +62,46 @@ export interface Project extends ProjectSummary {
     /** Por que não dá para refinar e o que fazer (só quando installed = false). */
     message: string | null;
     result: FaceRefineResult | null;
+    /** Trocador e força do restaurador do próximo refino. */
+    settings: FaceSettings;
+    /** Última comparação de ajustes (comparar_rosto.json), do vídeo atual. */
+    compare: FaceCompareResult | null;
   };
+  /** exports/final.json: de onde veio o fundo do wan_final.mp4. */
+  wan_final_info: WanFinalInfo | null;
+}
+
+export type FaceSwapper = "hyperswap_1a_256" | "hyperswap_1b_256" | "hyperswap_1c_256";
+
+export interface FaceSettings {
+  trocador: FaceSwapper;
+  /** Força do restaurador de nitidez (GFPGAN), 0 a 100; 0 = sem restaurador. */
+  restaurador: number;
+}
+
+export interface FaceCompareVariant {
+  id: string;
+  /** null = sem refino (o rosto do Wan). */
+  trocador: FaceSwapper | null;
+  restaurador: number | null;
+  rotulo: string;
+  atual: boolean;
+}
+
+export interface FaceCompareResult {
+  variantes: FaceCompareVariant[];
+  colunas: number;
+  trecho: { inicio: number; quadros: number; segundos: number };
+  segundos: number;
+  concluido_em: string;
+}
+
+export interface WanFinalInfo {
+  /** "original": a pessoa sobre o vídeo enviado, em resolução cheia; "reduzido": o vídeo do Wan ampliado. */
+  fundo: "original" | "reduzido";
+  motivo?: string;
+  tamanho: [number, number];
+  original?: [number, number];
 }
 
 export type WanFile =
@@ -71,7 +110,10 @@ export type WanFile =
   | "wan_result.mp4"
   | "wan_final.mp4"
   | "comparativo.mp4"
-  | "facefusion_rosto.log";
+  | "facefusion_rosto.log"
+  | "comparar_rosto.mp4"
+  | "comparar_rosto.png"
+  | "facefusion_comparar.log";
 
 /** exports/face_refine.json: o último refino do rosto do vídeo atual. */
 export interface FaceRefineResult {
@@ -84,6 +126,8 @@ export interface FaceRefineResult {
   /** false: o refino valeu para o quadro inteiro (sem as máscaras do pacote). */
   mascara?: boolean;
   avisos?: string[];
+  trocador?: FaceSwapper;
+  restaurador_forca?: number;
   concluido_em?: string;
 }
 
@@ -185,6 +229,9 @@ export const engine = {
   saveKaggleToken: (token: string) => request<KaggleAccount>("/kaggle/token", json({ token })),
   runOnKaggle: (id: string) => request<Job>(`/projects/${id}/kaggle`, { method: "POST" }),
   faceRefine: (id: string) => request<Job>(`/projects/${id}/face-refine`, { method: "POST" }),
+  faceCompare: (id: string) => request<Job>(`/projects/${id}/face-compare`, { method: "POST" }),
+  saveFaceSettings: (id: string, settings: FaceSettings) =>
+    request<Project["face_refine"]>(`/projects/${id}/face-settings`, { ...json(settings), method: "PUT" }),
   uploadWanResult: (id: string, file: File) => {
     const form = new FormData();
     form.append("file", file);
