@@ -14,7 +14,7 @@ import pytest
 from fastapi.testclient import TestClient
 from PIL import Image
 
-from conftest import clip_view, make_video
+from conftest import clip_view, make_bt709_video, make_video
 from studio import finish, media, rife, wan
 from studio.api import create_app
 from studio.projects import project_paths
@@ -291,3 +291,56 @@ def test_interpolation_off_by_setting(settings, tmp_path):
         _import(client, pid, _kaggle_result(root, tmp_path / "resultado.mp4"))
         info = finish.read_info(root)
         assert info["fps"] == "16/1" and info["sem_interpolacao"] == "interpolação desligada"
+
+
+# --------------------------------------------------------------------------- cores (BT.709)
+
+def _phone_final(settings, tmp_path, legacy_frames: bool) -> tuple[Path, dict, list[int]]:
+    with TestClient(create_app(settings)) as client:
+        video = make_bt709_video(tmp_path / "celular.mp4")
+        with open(video, "rb") as f:
+            pid = client.post("/projects", files={"file": ("celular.mp4", f)}).json()["id"]
+        root = project_paths(settings, pid).root
+        if legacy_frames:
+            (root / "frames" / media.FAITHFUL_COLORS_MARKER).unlink()
+            subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(root / "clip.mp4"), "-q:v", "2", "-start_number", "0",
+                            str(root / "frames" / "%05d.jpg")], check=True)
+        project = client.get(f"/projects/{pid}").json()
+        client.post(f"/projects/{pid}/clicks", json={"frame_idx": 0, "x": project["width"] // 2,
+                                                     "y": project["height"] // 2, "label": 1})
+        client.post(f"/projects/{pid}/track")
+        client.app.state.jobs.wait_idle(timeout=60)
+        ref = tmp_path / "p.png"
+        Image.new("RGB", (512, 768), (40, 120, 200)).save(ref)
+        with open(ref, "rb") as f:
+            client.post(f"/projects/{pid}/reference", files={"file": ("p.png", f)})
+        client.post(f"/projects/{pid}/wan-package", json={"resolution": "480p", "fps": 16})
+        client.app.state.jobs.wait_idle(timeout=120)
+        with zipfile.ZipFile(root / "exports" / "wan_package.zip") as zf:
+            job = json.loads(zf.read("job.json"))
+        _import(client, pid, _kaggle_result(root, tmp_path / "r.mp4"))
+        return root, job, job["source_frame_indices"]
+
+
+def test_final_keeps_the_colors_of_a_phone_video(settings, tmp_path):
+    """Vídeo de celular (BT.709): o final tem as cores do original como um player mostra."""
+    root, job, indices = _phone_final(settings, tmp_path, legacy_frames=False)
+    assert job["cores"] == "fieis"
+    info = finish.read_info(root)
+    # Medido: ~3,1 com a leitura certa; 8 com a trocada (BT.601), o que já dispara a reserva.
+    assert info["fundo"] == "original" and info["diferenca_pacote"] < 4.5, info
+    got = _frame(root / "exports" / "wan_final.mp4", 5)
+    truth = clip_view(root, indices[5], (1080, 1920))  # o ffmpeg lê o original pela marcação BT.709
+    bars = (slice(40, 700), slice(0, 1080))  # faixas de cores fortes, longe da pessoa
+    assert _diff(got[bars], truth[bars]) < 4, _diff(got[bars], truth[bars])
+    assert np.abs((got[bars] - truth[bars]).mean(axis=(0, 1))).max() < 1.5
+
+
+def test_old_projects_keep_matching_colors(settings, tmp_path):
+    """Projeto antigo (JPEG sem converter): o original é lido como antes (BT.601), e o fundo continua
+    batendo com a pessoa gerada."""
+    root, job, _ = _phone_final(settings, tmp_path, legacy_frames=True)
+    assert job["cores"] == "bt601"
+    info = finish.read_info(root)
+    # Medido: ~3,2 com a leitura antiga (certa para este projeto); 9 lendo pela marcação.
+    assert info["fundo"] == "original" and info["diferenca_pacote"] < 4.5, info

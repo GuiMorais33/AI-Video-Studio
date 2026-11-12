@@ -235,6 +235,8 @@ def build_package(
             "source_frame_indices": indices,
             "source": {"width": project["width"], "height": project["height"], "fps": project["fps"]},
             "geometry": asdict(geo),
+            # Como as cores dos quadros foram lidas (media.extract_frames): o acabamento lê o original igual.
+            "cores": "fieis" if (frames_dir / media.FAITHFUL_COLORS_MARKER).exists() else "bt601",
             "prompt": prompt.strip(),
             "empty_mask_frames": empty,
             "trimmed_frames": trimmed,

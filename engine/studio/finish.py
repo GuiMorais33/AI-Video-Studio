@@ -7,7 +7,8 @@ geração, com borda suave) vem do vídeo do Wan ou do refino do rosto. O resto 
 
 - os quadros: o mesmo corte (-ss/-t) e o mesmo fps do clipe, e depois os índices do pacote;
 - o enquadramento: o mesmo recorte do pacote (wan_geometry), levado para o tamanho do original;
-- as cores: lidas como o clipe chega ao Wan (media.CLIP_COLORS).
+- as cores: lidas como o clipe chegou ao Wan (media.clip_colors: pela marcação do vídeo, ou BT.601
+  nos pacotes de projetos antigos).
 
 Antes de gravar, cada quadro do original é conferido contra o vídeo do pacote (wan_input.mp4). Se não
 bater (quadro trocado, enquadramento ou cor diferentes), o final volta ao jeito antigo e o motivo fica
@@ -165,7 +166,7 @@ def compose(project: dict[str, Any], root: Path, video: Path, output: Path, size
             with media.FrameReader(
                 source, src_w, src_h,
                 input_args=("-ss", f"{start:.3f}", "-t", f"{float(project['duration']) + 1:.3f}"),
-                vf=f"fps={media.fps_arg(clip_fps)},format=yuv420p,{media.CLIP_COLORS}",
+                vf=f"fps={media.fps_arg(clip_fps)},format=yuv420p,{media.clip_colors(job)}",
             ) as source_reader, media.FrameReader(video, info.width, info.height) as layer_reader, \
                     media.FrameReader(wan_input, gen_w, gen_h) as input_reader:
 

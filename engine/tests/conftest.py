@@ -41,6 +41,16 @@ def make_video(
     return path
 
 
+def make_bt709_video(path: Path, *, size: str = "720x1280", seconds: float = 1.0) -> Path:
+    """Como o de um celular: cores convertidas com a matriz BT.709 e o vídeo marcado BT.709. O padrão de
+    teste tem faixas de cores fortes, onde ler como BT.601 erra mais."""
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", f"testsrc2=size={size}:rate=30:duration={seconds}",
+                    "-vf", "scale=out_color_matrix=bt709:out_range=tv:flags=accurate_rnd+full_chroma_int,format=yuv420p",
+                    "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709", "-c:v", "libx264",
+                    "-crf", "10", str(path)], check=True)
+    return path
+
+
 @pytest.fixture
 def settings(tmp_path: Path) -> Settings:
     # Sem FaceFusion: um instalado de verdade no computador não pode entrar nos testes. A memória

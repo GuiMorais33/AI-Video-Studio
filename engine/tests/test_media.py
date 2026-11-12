@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 
 from studio import media
-from conftest import make_video
+from conftest import make_bt709_video, make_video, read_frame
 
 
 def test_prepare_clip_downscales_trims_and_caps_fps(tmp_path):
@@ -64,3 +64,17 @@ def test_frame_writer_reports_ffmpeg_dying(tmp_path):
         for _ in range(200):
             writer.write(np.zeros((48, 64, 3), np.uint8))
     writer.abort()
+
+
+def test_extracted_frames_keep_the_colors_of_a_phone_video(tmp_path):
+    """Vídeo BT.709 (celular): os JPEG do clipe têm as cores que um player mostra, não BT.709 lido como BT.601."""
+    from PIL import Image
+
+    src = make_bt709_video(tmp_path / "celular.mp4", size="640x360")
+    media.prepare_clip(src, tmp_path / "clip.mp4", max_side=854)
+    assert media.extract_frames(tmp_path / "clip.mp4", tmp_path / "frames") == 30
+    assert (tmp_path / "frames" / media.FAITHFUL_COLORS_MARKER).exists()
+    jpg = np.asarray(Image.open(tmp_path / "frames" / "00005.jpg").convert("RGB"), np.float32)
+    truth = read_frame(tmp_path / "clip.mp4", 5)  # o ffmpeg lê pela marcação, como os players
+    assert np.abs(jpg - truth).mean() < 2.5, np.abs(jpg - truth).mean()
+    assert np.abs((jpg - truth).mean(axis=(0, 1))).max() < 1.5  # sem desvio de cor

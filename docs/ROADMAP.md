@@ -131,8 +131,12 @@ vídeo de corpo inteiro: ~65 px de rosto em 464×832).
 | Ajustes do rosto | fixos: hyperswap 1a + GFPGAN 80% | comparação num trecho de ~1,5 s com o rosto de frente, e você escolhe | 6 execuções do FaceFusion num trecho de 24 quadros: 9 min na CPU, contando o download do hyperswap 1b e 1c |
 | fps do vídeo final | 16 (o do Wan), quadros repetidos até 30 | o fps do clipe (ex.: 30): o RIFE v4.6 cria a pessoa entre os dois quadros vizinhos | quadro recriado contra o verdadeiro: 35,9 dB, contra 23,6 dB repetindo o anterior (vídeo de crianças pulando, 30 fps). Na CPU, 0,8 s por quadro criado com a pessoa em 1664×928: ~1 min a mais para 5 s de vídeo |
 
-Cores: o fundo do original é lido com a mesma conversão de cor do clipe que vai para o Wan (BT.601).
-Lido como BT.709, a diferença seria de ~6 níveis e apareceria como uma "caixa" em volta da pessoa.
+Cores: os quadros do clipe eram lidos sempre como BT.601, e um vídeo de celular (BT.709) virava
+"BT.709 lido como BT.601", com ~6 níveis de diferença em média e até ~15 em cores fortes, herdados pelo
+Wan e pelo final. Agora a extração converte pela marcação do vídeo: ~0,8 nível contra a leitura fiel,
+e nada muda em vídeo BT.601 ou sem marcação. O fundo do original é lido do mesmo jeito que os quadros
+do pacote; num pacote de projeto antigo (`"cores": "bt601"` no `job.json`), do jeito antigo. Lido do
+jeito trocado, a diferença contra o pacote sobe de ~3 para 8–9 e o estúdio cai na reserva.
 
 Escolha do RIFE: quadro do meio recriado a partir dos vizinhos e comparado com o verdadeiro (PSNR).
 Crianças pulando (movimento rápido): repetir 23,4 dB, misturar os dois 26,0, RIFE v4.6 30,5, v4.7 30,3,

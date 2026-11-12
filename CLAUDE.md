@@ -86,7 +86,10 @@ bash scripts/tests/setup.test.sh && bash scripts/tests/torch-choice.test.sh  # s
     restaurador (força 100) por trocador; as outras forças saem da mistura linear dos dois.
   - O final (`finish.py`, chamado por `wan.finish_result`) cola a pessoa sobre o `source.*` em
     resolução cheia: mesmos quadros (corte/fps do clipe + índices do pacote), mesmo enquadramento
-    (`wan_geometry`) e as cores lidas como o clipe chega ao Wan (`media.CLIP_COLORS`, BT.601).
+    (`wan_geometry`) e as cores lidas como o clipe chegou ao Wan (`media.clip_colors(job)`: pela
+    marcação do vídeo; BT.601 forçado nos pacotes de projetos antigos, sem `"cores": "fieis"`).
+    `media.extract_frames` converte as cores pela marcação (BT.709 nos celulares) e grava
+    `frames/.cores-fieis`; o pacote copia isso para o `job.json`.
     Cada quadro é conferido contra o `wan_input.mp4`; se não bater, volta a ampliar o vídeo do Wan e
     grava o motivo em `exports/final.json`. Sai `wan_final.mp4` em 1080x1920 com o áudio, no fps do
     clipe: nos quadros que o pacote pulou (30 -> 16 fps), o RIFE v4.6 (`rife.py`, rede reescrita,

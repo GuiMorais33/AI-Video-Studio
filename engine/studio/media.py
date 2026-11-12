@@ -116,15 +116,22 @@ def prepare_clip(
 
 
 def extract_frames(clip: Path, frames_dir: Path) -> int:
-    """Extrai quadros JPEG nomeados 00000.jpg, 00001.jpg... (formato aceito pelo SAM 2)."""
+    """Extrai quadros JPEG nomeados 00000.jpg, 00001.jpg... (formato aceito pelo SAM 2).
+
+    As cores são convertidas para o que o JPEG guarda e o PIL lê (BT.601, faixa cheia) a partir da
+    marcação do vídeo. Sem isso, um vídeo de celular (BT.709) virava BT.709 lido como BT.601: ~6
+    níveis de diferença em média e até ~15 em cores fortes, herdados pelo Wan e pelo vídeo final.
+    Grava FAITHFUL_COLORS_MARKER na pasta: os pacotes feitos destes quadros leem o original com
+    CLIP_COLORS; os de projetos antigos, com CLIP_COLORS_LEGACY (clip_colors)."""
     frames_dir.mkdir(parents=True, exist_ok=True)
     run([
-        ffmpeg_bin(), "-y", "-v", "error", "-i", str(clip),
+        ffmpeg_bin(), "-y", "-v", "error", "-i", str(clip), "-vf", JPEG_COLORS,
         "-q:v", "2", "-start_number", "0", str(frames_dir / "%05d.jpg"),
     ])
     count = len(list(frames_dir.glob("*.jpg")))
     if count == 0:
         raise MediaError("Nenhum quadro foi extraído do vídeo.")
+    (frames_dir / FAITHFUL_COLORS_MARKER).write_text("cores convertidas pela marcação do vídeo\n")
     return count
 
 
@@ -139,10 +146,22 @@ def count_frames(path: Path) -> int:
 
 # Marcação das cores do vídeo final (BT.709, o que os players supõem em vídeo HD).
 BT709_TAGS = ("-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709")
-# Lê os quadros com as cores do jeito que o clipe chega ao Wan: os JPEG do clipe são lidos como
-# BT.601, seja qual for a marcação do vídeo (medido: diferença de ~1 nível com isto; ~6 lendo como
-# BT.709 um vídeo de celular marcado BT.709). Sem isso, o fundo e a pessoa gerada não batem.
-CLIP_COLORS = "scale=in_color_matrix=bt601:flags=accurate_rnd+full_chroma_int"
+# Cores dos quadros do clipe (JPEG lidos pelo PIL = BT.601 de faixa cheia), convertidas a partir da
+# marcação do vídeo (BT.709 nos celulares). Medido num vídeo BT.709: ~0,8 nível de diferença contra
+# a leitura fiel, contra ~5-6 (e até 15) sem converter. Vídeo BT.601 ou sem marcação: igual.
+JPEG_COLORS = "scale=in_color_matrix=auto:out_color_matrix=bt601:out_range=pc:flags=accurate_rnd+full_chroma_int"
+FAITHFUL_COLORS_MARKER = ".cores-fieis"
+# Leitura do vídeo original que bate com os quadros do clipe que foram para o Wan (o fundo e a pessoa
+# gerada precisam ter as mesmas cores): a fiel, pela marcação do vídeo...
+CLIP_COLORS = "scale=in_color_matrix=auto:flags=accurate_rnd+full_chroma_int"
+# ...ou, para projetos de antes de 11/2026 (JPEG extraídos sem converter), BT.601 forçado, como eles
+# chegaram ao Wan (diferença de ~1 nível; lendo pela marcação seriam ~6, uma "caixa" em volta da pessoa).
+CLIP_COLORS_LEGACY = "scale=in_color_matrix=bt601:flags=accurate_rnd+full_chroma_int"
+
+
+def clip_colors(job: dict) -> str:
+    """Leitura do original que bate com os quadros deste pacote do Wan (job.json)."""
+    return CLIP_COLORS if job.get("cores") == "fieis" else CLIP_COLORS_LEGACY
 
 
 def first_frame_size(path: Path, start: float = 0.0) -> tuple[int, int]:
