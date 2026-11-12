@@ -7,6 +7,7 @@ import json
 import shutil
 import subprocess
 import zipfile
+from io import BytesIO
 from pathlib import Path
 
 import numpy as np
@@ -344,3 +345,61 @@ def test_old_projects_keep_matching_colors(settings, tmp_path):
     info = finish.read_info(root)
     # Medido: ~3,2 com a leitura antiga (certa para este projeto); 9 lendo pela marcação.
     assert info["fundo"] == "original" and info["diferenca_pacote"] < 4.5, info
+
+
+# --------------------------------------------------------------------------- borda (aura)
+
+def test_band_around_the_person_comes_from_the_sharp_original(settings, tmp_path):
+    """Na faixa da máscara da geração em volta da pessoa, onde o Wan redesenhou o fundo quase igual
+    (aqui, 6 níveis mais claro), vale o original nítido; o personagem, mesmo além da silhueta
+    original, continua inteiro."""
+    from studio.masks import generation_mask
+
+    with TestClient(create_app(settings)) as client:
+        pid = _project(client, tmp_path)
+        root = project_paths(settings, pid).root
+        with zipfile.ZipFile(root / "exports" / "wan_package.zip") as zf:
+            raw = [np.asarray(Image.open(BytesIO(zf.read(f"masks/{i:05d}.png")))) > 127 for i in range(16)]
+        yy, xx = np.mgrid[0:832, 0:464]
+        rings = {}
+        result = tmp_path / "resultado.mp4"
+        fps = media.probe(root / "exports" / "wan_input.mp4").fps
+        writer = media.FrameWriter(result, 464, 832, fps, crf=10)
+        with media.FrameReader(root / "exports" / "wan_input.mp4", 464, 832) as reader:
+            for i in range(16):
+                frame = reader.read().astype(np.float32)
+                cy, cx = np.argwhere(raw[i]).mean(axis=0)
+                radius = np.sqrt(raw[i].sum() / np.pi)
+                dist = np.hypot(yy - cy, xx - cx)
+                character = dist <= radius + 7  # passa 7 px da silhueta original (cabelo, roupa larga)
+                area = generation_mask(raw[i])
+                out = np.where(area[..., None], np.clip(frame + 6, 0, 255), frame)  # faixa: quase igual
+                out[character] = (230, 20, 20)
+                writer.write(np.clip(out + 0.5, 0, 255).astype(np.uint8))
+                if i == 5:
+                    rings["faixa"] = area & (dist > radius + 16)          # longe do personagem
+                    rings["alem"] = (dist > radius + 2) & (dist < radius + 5)  # personagem fora da silhueta
+        writer.close()
+        _import(client, pid, result)
+
+        info = finish.read_info(root)
+        assert info["fundo"] == "original" and info["borda_original"] > 0.2, info
+        got = _frame(root / "exports" / "wan_final.mp4", 5)
+        with zipfile.ZipFile(root / "exports" / "wan_package.zip") as zf:
+            indices = json.loads(zf.read("job.json"))["source_frame_indices"]
+        original = _source_view(root, indices[5])
+        view_h = 1920 / max(1080 / 464, 1920 / 832)
+        box = (0, (832 - view_h) / 2, 464, (832 + view_h) / 2)
+
+        def in_final(mask: np.ndarray) -> np.ndarray:
+            img = Image.fromarray(mask.astype(np.uint8) * 255).resize((1080, 1920), Image.Resampling.NEAREST, box=box)
+            return np.asarray(img) > 127
+
+        band, beyond = in_final(rings["faixa"]), in_final(rings["alem"])
+        assert band.sum() > 2000 and beyond.sum() > 500
+        # Faixa: o original (sem os +6 do Wan); antes desta mudança, a média ficava em ~+6.
+        bias = float((got[band] - original[band]).mean())
+        assert abs(bias) < 2, bias
+        # Além da silhueta original, o personagem continua (vermelho), não o fundo.
+        red = got[beyond].mean(axis=0)
+        assert red[0] > 170 and red[1] < 90 and red[2] < 90, red

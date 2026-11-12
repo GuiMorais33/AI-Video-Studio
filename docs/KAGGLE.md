@@ -96,7 +96,8 @@ Assim que o vídeo do Kaggle é importado, o estúdio começa o refino sozinho:
 4. a pessoa vai sobre o **seu vídeo original em resolução cheia** (fora da área do personagem, o
    fundo é o que você filmou, não uma cópia reduzida e esticada), no tamanho dos Reels (**1080×1920**
    em pé, 1920×1080 deitado), com o áudio original. Se o original não bater com o pacote (projeto
-   antigo, outro vídeo), o estúdio volta a ampliar o vídeo do Wan inteiro e avisa na etapa 4;
+   antigo, outro vídeo), o estúdio volta a ampliar o vídeo do Wan inteiro e avisa na etapa 4. Em
+   volta da pessoa, onde o Wan redesenhou o fundo quase igual, fica o seu fundo nítido (sem "aura");
 5. o vídeo final volta ao fps do seu vídeo (ex.: 30): o Wan gera a 16 fps, e o RIFE cria a pessoa
    nos quadros que faltam, a partir dos dois vizinhos (repetir quadros deixaria o movimento
    picotado). Na primeira vez baixa ~21 MB do GitHub. Sem ele (falha no download), o final fica em

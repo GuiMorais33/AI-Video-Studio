@@ -30,7 +30,7 @@ import numpy as np
 from PIL import Image, ImageFilter
 
 from . import media, rife
-from .masks import COMPOSITE_FEATHER, generation_mask
+from .masks import COMPOSITE_FEATHER, dilate, generation_mask
 
 INFO_FILE = "final.json"
 # Diferença média (0-255) aceita entre o original, levado ao enquadramento do pacote, e o vídeo do
@@ -38,6 +38,16 @@ INFO_FILE = "final.json"
 # 1 a 4 em vídeo real; um quadro trocado num vídeo com movimento, ou outra cor, passa bem disso.
 MATCH_TOLERANCE = 8.0
 LANCZOS = Image.Resampling.LANCZOS
+# Borda: a máscara da geração é a da pessoa alargada (~9 px) e em blocos de 16 px. Nessa faixa em volta
+# da pessoa, o Wan redesenha o fundo (sem vê-lo) em 480p: colado inteiro sobre o original nítido, vira
+# uma "aura" mais mole. Ali, onde o vídeo do Wan ficou parecido com o original (diferença média entre
+# DIFF_LOW e DIFF_HIGH, 0-255, depois de um desfoque leve), entra o original; onde difere (a pessoa
+# gerada, cabelo e roupa além da silhueta), fica o Wan. Na silhueta da pessoa original (+ CORE_MARGIN
+# px) fica sempre o Wan: ela nunca pode aparecer.
+DIFF_LOW = 10.0
+DIFF_HIGH = 28.0
+DIFF_BLUR = 2
+CORE_MARGIN = 4
 
 
 class Skipped(Exception):
@@ -69,6 +79,28 @@ def soft_mask(mask: np.ndarray) -> np.ndarray:
     geração, uint8 0..255."""
     img = Image.fromarray(generation_mask(mask).astype(np.uint8) * 255)
     return np.asarray(img.filter(ImageFilter.GaussianBlur(COMPOSITE_FEATHER)))
+
+
+def core_mask(mask: np.ndarray) -> np.ndarray:
+    """Silhueta da pessoa original com folga de CORE_MARGIN px e borda suave (uint8, tamanho da geração)."""
+    grown = dilate(mask, 2 * CORE_MARGIN + 1, 1)
+    return np.asarray(Image.fromarray(grown.astype(np.uint8) * 255).filter(ImageFilter.GaussianBlur(CORE_MARGIN / 2)))
+
+
+def changed_weight(layer_gen: np.ndarray, original_gen: np.ndarray) -> np.ndarray:
+    """0..1 (tamanho da geração): quanto o vídeo do Wan difere do original em cada ponto (0 = igual)."""
+    diff = np.abs(layer_gen.astype(np.int16) - original_gen.astype(np.int16)).mean(axis=2)
+    # x4 para não perder precisão no uint8 do desfoque.
+    blurred = Image.fromarray(np.clip(diff * 4, 0, 255).astype(np.uint8)).filter(ImageFilter.GaussianBlur(DIFF_BLUR))
+    level = np.asarray(blurred, np.float32) / 4
+    return np.clip((level - DIFF_LOW) / (DIFF_HIGH - DIFF_LOW), 0, 1)
+
+
+def blend_mask(generated: np.ndarray, core: np.ndarray, weight: np.ndarray) -> np.ndarray:
+    """Onde vale o vídeo do Wan (uint8): a silhueta original sempre; o resto da área da geração na
+    proporção do quanto ele difere do original."""
+    out = np.maximum(core.astype(np.float32), generated.astype(np.float32) * weight)
+    return np.clip(out + 0.5, 0, 255).astype(np.uint8)
 
 
 def to_alpha(soft: np.ndarray, size: tuple[int, int], box: tuple[float, float, float, float]) -> np.ndarray:
@@ -149,18 +181,19 @@ def compose(project: dict[str, Any], root: Path, video: Path, output: Path, size
         wanted = list(range(indices[0], indices[-1] + 1)) if interpolate else indices
         out_fps = clip_fps if interpolate else Fraction(job["fps"])
 
-        def clip_soft(k: int) -> np.ndarray | None:
-            """Máscara do SAM 2 do quadro `k` do clipe, no enquadramento da geração (suave, uint8)."""
+        def clip_raw(k: int) -> np.ndarray | None:
+            """Máscara do SAM 2 do quadro `k` do clipe, no enquadramento da geração (bool)."""
             path = root / "masks" / "obj1" / f"{k:05d}.png"
             if not path.exists():
                 return None
             with Image.open(path) as img:
                 fitted = img.convert("L").resize((geo["scaled_width"], geo["scaled_height"]), Image.Resampling.NEAREST)
             box = (geo["crop_x"], geo["crop_y"], geo["crop_x"] + gen_w, geo["crop_y"] + gen_h)
-            return soft_mask(np.asarray(fitted.crop(box)) > 127)
+            return np.asarray(fitted.crop(box)) > 127
 
         writer = media.FrameWriter(output, width, height, out_fps, crf=16, preset="medium", bt709=True)
         diffs: list[float] = []
+        recovered: list[float] = []  # fração da área da geração que voltou a ser o original (a "aura")
         made = 0
         try:
             with media.FrameReader(
@@ -170,8 +203,8 @@ def compose(project: dict[str, Any], root: Path, video: Path, output: Path, size
             ) as source_reader, media.FrameReader(video, info.width, info.height) as layer_reader, \
                     media.FrameReader(wan_input, gen_w, gen_h) as input_reader:
 
-                def package_frame(i: int) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
-                    """(pessoa, quadro do pacote, máscara suave) do quadro `i` do pacote."""
+                def package_frame(i: int) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray] | None:
+                    """(pessoa, quadro do pacote, área da geração suave, silhueta suave) do quadro `i`."""
                     if i >= count:
                         return None
                     layer, packaged = layer_reader.read(), input_reader.read()
@@ -179,7 +212,7 @@ def compose(project: dict[str, Any], root: Path, video: Path, output: Path, size
                         raise Skipped("o vídeo acabou antes do pacote")
                     with Image.open(BytesIO(zf.read(f"masks/{i:05d}.png"))) as img:
                         mask = np.asarray(img.convert("L")) > 127
-                    return np.ascontiguousarray(layer[:layer_h, :layer_w]), packaged, soft_mask(mask)
+                    return np.ascontiguousarray(layer[:layer_h, :layer_w]), packaged, soft_mask(mask), core_mask(mask)
 
                 i, current, following = 0, package_frame(0), package_frame(1)
                 position, original = -1, None
@@ -192,10 +225,10 @@ def compose(project: dict[str, Any], root: Path, video: Path, output: Path, size
                         if original is None:
                             raise Skipped("o vídeo original acabou antes do clipe")
                     src_img = Image.fromarray(original)
+                    original_gen = np.asarray(src_img.resize((gen_w, gen_h), LANCZOS, box=source_gen))
                     if k == indices[i]:
-                        layer, _, soft = current
-                        check = np.asarray(src_img.resize((gen_w, gen_h), LANCZOS, box=source_gen), np.int16)
-                        diffs.append(float(np.abs(check - current[1]).mean()))
+                        layer, _, soft, core = current
+                        diffs.append(float(np.abs(original_gen.astype(np.int16) - current[1]).mean()))
                         if len(diffs) == 1 and diffs[0] > MATCH_TOLERANCE:
                             raise Skipped(f"o vídeo original não bate com o do pacote (diferença {diffs[0]:.1f})")
                     else:
@@ -206,15 +239,20 @@ def compose(project: dict[str, Any], root: Path, video: Path, output: Path, size
                             raise rife.RifeError(f"o RIFE falhou no meio ({type(exc).__name__}: {exc})") from exc
                         # A pessoa original nunca pode aparecer por baixo: a área vale onde ela estava
                         # nos dois vizinhos e onde o SAM 2 a viu neste quadro.
-                        masks = [current[2], following[2]]
-                        here = clip_soft(k)
-                        if here is not None:
-                            masks.append(here)
+                        here = clip_raw(k)
+                        masks = [current[2], following[2]] + ([soft_mask(here)] if here is not None else [])
                         soft = np.maximum.reduce(masks)
+                        core = core_mask(here) if here is not None else np.maximum(current[3], following[3])
                         made += 1
                     background = np.asarray(src_img.resize(size, LANCZOS, box=source_view), np.float32)
                     person = np.asarray(Image.fromarray(layer).resize(size, LANCZOS, box=layer_view), np.float32)
-                    alpha = to_alpha(soft, size, mask_view)
+                    layer_gen = layer if layer.shape[:2] == (gen_h, gen_w) else \
+                        np.asarray(Image.fromarray(layer).resize((gen_w, gen_h), LANCZOS))
+                    mixed = blend_mask(soft, core, changed_weight(layer_gen, original_gen))
+                    area = soft > 127
+                    if area.any():
+                        recovered.append(float((mixed[area] < 128).mean()))
+                    alpha = to_alpha(mixed, size, mask_view)
                     writer.write(np.clip(background + alpha * (person - background) + 0.5, 0, 255).astype(np.uint8))
                     progress((n + 1) / len(wanted))
             if median(diffs) > MATCH_TOLERANCE:
@@ -228,6 +266,7 @@ def compose(project: dict[str, Any], root: Path, video: Path, output: Path, size
         "fundo": "original", "original": [src_w, src_h], "tamanho": [width, height],
         "diferenca_pacote": round(median(diffs), 2), "pessoa": [layer_w, layer_h],
         "fps": media.fps_arg(out_fps), "quadros": len(wanted), "interpolados": made,
+        "borda_original": round(float(np.mean(recovered)), 3) if recovered else 0.0,
     }
     if gaps and interpolate is None:
         data["sem_interpolacao"] = note or "interpolação desligada"

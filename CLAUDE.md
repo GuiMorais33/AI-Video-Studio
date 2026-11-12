@@ -94,7 +94,9 @@ bash scripts/tests/setup.test.sh && bash scripts/tests/torch-choice.test.sh  # s
     grava o motivo em `exports/final.json`. Sai `wan_final.mp4` em 1080x1920 com o áudio, no fps do
     clipe: nos quadros que o pacote pulou (30 -> 16 fps), o RIFE v4.6 (`rife.py`, rede reescrita,
     pesos do GitHub por SHA-256 em `data/models/rife/`) cria a pessoa entre os vizinhos, e a máscara
-    junta a dos dois vizinhos com a do SAM 2 do quadro. Na importação, se o refino vem em seguida,
+    junta a dos dois vizinhos com a do SAM 2 do quadro. Borda: dentro da máscara da geração, onde o
+    vídeo do Wan ficou parecido com o original (`changed_weight`, diferença suave entre 10 e 28), entra o
+    original nítido; na silhueta original + 4 px (`core_mask`), sempre o Wan. Na importação, se o refino vem em seguida,
     o final é só uma prévia sem RIFE (`final_rife_dir`); o refino monta o definitivo. Os testes
     desligam o RIFE (`interpolate=False`) e usam um minúsculo local quando precisam.
   - O notebook amplia o resultado 2x com o Real-ESRGAN x2plus (RRDBNet reescrito no notebook,
