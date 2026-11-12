@@ -102,6 +102,11 @@ export interface WanFinalInfo {
   motivo?: string;
   tamanho: [number, number];
   original?: [number, number];
+  /** fps do vídeo final ("30/1"): o do clipe quando o RIFE criou os quadros que faltavam. */
+  fps?: string;
+  interpolados?: number;
+  /** Por que o final ficou no fps do pacote (16) em vez do fps do clipe. */
+  sem_interpolacao?: string;
 }
 
 export type WanFile =

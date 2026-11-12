@@ -45,8 +45,9 @@ def make_video(
 def settings(tmp_path: Path) -> Settings:
     # Sem FaceFusion: um instalado de verdade no computador não pode entrar nos testes. A memória
     # livre do computador de teste também não decide nada (o FaceFusion dos testes é falso).
+    # Sem RIFE por padrão: os testes não baixam os pesos (os de tests/test_finish.py usam um minúsculo).
     return Settings(data_dir=tmp_path / "data", tracker="demo", facefusion_dir=tmp_path / "sem-facefusion",
-                    facefusion_min_memory_gb=0)
+                    facefusion_min_memory_gb=0, interpolate=False)
 
 
 @pytest.fixture
@@ -64,13 +65,13 @@ def read_frame(path: Path, idx: int = 0) -> np.ndarray:
     return np.frombuffer(raw, np.uint8).reshape(height, width, 3).astype(np.float32)
 
 
-def source_view(root: Path, package_idx: int, size: tuple[int, int]) -> np.ndarray:
-    """O que o vídeo final mostra do original no quadro `package_idx` do pacote: o mesmo quadro do clipe,
-    o recorte do pacote (wan_geometry) e o corte central para cobrir `size`, nas coordenadas do original."""
+def clip_view(root: Path, clip_idx: int, size: tuple[int, int]) -> np.ndarray:
+    """O que o vídeo final mostra do original no quadro `clip_idx` do clipe: o recorte do pacote
+    (wan_geometry) e o corte central para cobrir `size`, nas coordenadas do original."""
     with zipfile.ZipFile(root / "exports" / "wan_package.zip") as zf:
         job = json.loads(zf.read("job.json"))
     geo, gw, gh = job["geometry"], job["width"], job["height"]
-    src = read_frame(next(root.glob("source*")), job["source_frame_indices"][package_idx])
+    src = read_frame(next(root.glob("source*")), clip_idx)
     sh, sw = src.shape[:2]
     s = max(size[0] / gw, size[1] / gh)
     x0, y0 = (gw - size[0] / s) / 2, (gh - size[1] / s) / 2
@@ -78,3 +79,10 @@ def source_view(root: Path, package_idx: int, size: tuple[int, int]) -> np.ndarr
     box = ((x0 + geo["crop_x"]) * fx, (y0 + geo["crop_y"]) * fy,
            (gw - x0 + geo["crop_x"]) * fx, (gh - y0 + geo["crop_y"]) * fy)
     return np.asarray(Image.fromarray(src.astype(np.uint8)).resize(size, Image.Resampling.LANCZOS, box=box), np.float32)
+
+
+def source_view(root: Path, package_idx: int, size: tuple[int, int]) -> np.ndarray:
+    """clip_view do quadro do clipe que virou o quadro `package_idx` do pacote."""
+    with zipfile.ZipFile(root / "exports" / "wan_package.zip") as zf:
+        indices = json.loads(zf.read("job.json"))["source_frame_indices"]
+    return clip_view(root, indices[package_idx], size)

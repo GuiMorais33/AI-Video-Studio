@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import shutil
 import subprocess
@@ -13,8 +14,8 @@ import pytest
 from fastapi.testclient import TestClient
 from PIL import Image
 
-from conftest import make_video, source_view
-from studio import finish, media, wan
+from conftest import clip_view, make_video
+from studio import finish, media, rife, wan
 from studio.api import create_app
 from studio.projects import project_paths
 
@@ -73,26 +74,8 @@ def _import(client, pid: str, video: Path) -> dict:
 
 
 def _source_view(root: Path, idx: int, size: tuple[int, int] = (1080, 1920)) -> np.ndarray:
-    """Quadro `idx` do CLIPE no original, no enquadramento do final (ver conftest.source_view)."""
-    with zipfile.ZipFile(root / "exports" / "wan_package.zip") as zf:
-        indices = json.loads(zf.read("job.json"))["source_frame_indices"]
-    if idx in indices:
-        return source_view(root, indices.index(idx), size)
-    # Quadro do clipe que não está no pacote (sincronia): troca o índice do pacote 0 por ele.
-    with zipfile.ZipFile(root / "exports" / "wan_package.zip") as zf:
-        job = json.loads(zf.read("job.json"))
-    job["source_frame_indices"][0] = idx
-    tmp = root / "exports" / "pacote-teste.zip"
-    with zipfile.ZipFile(tmp, "w") as zf:
-        zf.writestr("job.json", json.dumps(job))
-    backup = root / "exports" / "wan_package.zip"
-    backup.rename(root / "exports" / "pacote-original.zip")
-    tmp.rename(backup)
-    try:
-        return source_view(root, 0, size)
-    finally:
-        backup.unlink()
-        (root / "exports" / "pacote-original.zip").rename(backup)
+    """Quadro `idx` do CLIPE no original, no enquadramento do final (ver conftest.clip_view)."""
+    return clip_view(root, idx, size)
 
 
 def _diff(a: np.ndarray, b: np.ndarray) -> float:
@@ -228,3 +211,83 @@ def test_rotated_phone_video(settings, tmp_path):
         info = finish.read_info(root)
         assert info["fundo"] == "original" and info["original"] == [720, 1280], info
         assert info["diferenca_pacote"] < finish.MATCH_TOLERANCE
+
+
+# --------------------------------------------------------------------------- 30 fps (RIFE)
+
+@pytest.fixture
+def rife_settings(settings, tmp_path, monkeypatch):
+    """Interpolação ligada com um RIFE minúsculo local (file://, sem internet)."""
+    pytest.importorskip("torch")
+    from test_rife import tiny_rife
+
+    weights = tiny_rife(tmp_path / "rife-minusculo.pkl")
+    monkeypatch.setattr(rife, "MODEL", rife.RifeModel("rife-minusculo.pkl", weights.resolve().as_uri(),
+                                                      rife._sha256(weights)))
+    return dataclasses.replace(settings, interpolate=True)
+
+
+def test_final_at_clip_fps_with_rife(rife_settings, tmp_path):
+    """Clipe a 30 fps, pacote a 16: o final volta a 30 fps, com o RIFE criando a pessoa nos quadros que
+    o Wan não gerou, sobre o quadro certo do original."""
+    with TestClient(create_app(rife_settings)) as client:
+        pid = _project(client, tmp_path)
+        root = project_paths(rife_settings, pid).root
+        with zipfile.ZipFile(root / "exports" / "wan_package.zip") as zf:
+            indices = json.loads(zf.read("job.json"))["source_frame_indices"]
+        assert indices[:3] == [0, 2, 4] and indices[-1] == 28 and len(indices) == 16
+        _import(client, pid, _kaggle_result(root, tmp_path / "resultado.mp4"))
+        info = finish.read_info(root)
+        assert info["fundo"] == "original" and info["fps"] == "30/1", info
+        assert info["quadros"] == 29 and info["interpolados"] == 13 and "sem_interpolacao" not in info
+        assert (rife_settings.models_dir / "rife" / "rife-minusculo.pkl").exists()
+        final = root / "exports" / "wan_final.mp4"
+        meta = media.probe(final)
+        assert meta.fps == 30 and media.count_frames(final) == 29 and meta.has_audio
+        assert media.probe(root / "exports" / "comparativo.mp4").fps == 30
+
+        # Quadro 1 do clipe: não está no pacote (criado pelo RIFE entre os quadros 0 e 2).
+        got = _frame(final, 1)
+        detail = (slice(1220, 1660), slice(700, 920))
+        here, before, after = (_source_view(root, k) for k in (1, 0, 2))
+        assert _diff(got[detail], here[detail]) * 1.4 < min(_diff(got[detail], before[detail]),
+                                                            _diff(got[detail], after[detail]))
+        center = got[900:1020, 480:600].mean(axis=(0, 1))
+        assert center[0] > 180 and center[1] < 70 and center[2] < 70, center  # a pessoa (vermelho), não o original
+
+
+def test_rife_failure_falls_back_to_package_fps(rife_settings, tmp_path, monkeypatch):
+    def broken(self, a, b, t):
+        raise RuntimeError("sem memória")
+
+    monkeypatch.setattr(rife.Interpolator, "__call__", broken)
+    with TestClient(create_app(rife_settings)) as client:
+        pid = _project(client, tmp_path)
+        root = project_paths(rife_settings, pid).root
+        _import(client, pid, _kaggle_result(root, tmp_path / "resultado.mp4"))
+        info = finish.read_info(root)
+        assert info["fundo"] == "original" and info["fps"] == "16/1" and info["interpolados"] == 0
+        assert "RIFE falhou" in info["sem_interpolacao"] and "sem memória" in info["sem_interpolacao"]
+        assert media.count_frames(root / "exports" / "wan_final.mp4") == 16
+
+
+def test_rife_unavailable_keeps_package_fps(rife_settings, tmp_path, monkeypatch):
+    def offline(models_dir, model=None):
+        raise rife.RifeError("não foi possível baixar os pesos do RIFE (sem internet)")
+
+    monkeypatch.setattr(rife, "fetch", offline)
+    with TestClient(create_app(rife_settings)) as client:
+        pid = _project(client, tmp_path)
+        root = project_paths(rife_settings, pid).root
+        _import(client, pid, _kaggle_result(root, tmp_path / "resultado.mp4"))
+        info = finish.read_info(root)
+        assert info["fps"] == "16/1" and "sem internet" in info["sem_interpolacao"]
+
+
+def test_interpolation_off_by_setting(settings, tmp_path):
+    with TestClient(create_app(settings)) as client:
+        pid = _project(client, tmp_path)
+        root = project_paths(settings, pid).root
+        _import(client, pid, _kaggle_result(root, tmp_path / "resultado.mp4"))
+        info = finish.read_info(root)
+        assert info["fps"] == "16/1" and info["sem_interpolacao"] == "interpolação desligada"

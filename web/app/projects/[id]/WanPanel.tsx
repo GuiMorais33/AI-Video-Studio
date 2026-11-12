@@ -11,6 +11,7 @@ import {
   engine,
   faceUrl,
   fileUrl,
+  fpsValue,
   referenceUrl,
 } from "@/lib/engine";
 
@@ -301,6 +302,7 @@ export function WanPanel({ project, locked, run }: Props) {
                 <span className="muted small">
                   {refined?.ok ? "rosto refinado, " : ""}tamanho dos Reels + áudio original
                   {finalInfo?.fundo === "original" ? ", sobre o seu vídeo em resolução cheia" : ""}
+                  {finalInfo?.fps ? `, ${Math.round(fpsValue(finalInfo.fps))} fps` : ""}
                 </span>
               </li>
               <li>
@@ -310,6 +312,12 @@ export function WanPanel({ project, locked, run }: Props) {
             </ul>
           )}
 
+          {finalInfo?.sem_interpolacao && finalInfo.sem_interpolacao !== "interpolação desligada" && (
+            <p className="status warn">
+              O vídeo final ficou com o movimento do Wan ({Math.round(fpsValue(finalInfo.fps ?? "16"))} fps), sem os
+              quadros intermediários: {finalInfo.sem_interpolacao}.
+            </p>
+          )}
           {finalInfo?.fundo === "reduzido" && (
             <p className="status warn">
               O fundo do vídeo final saiu ampliado do vídeo do Wan, não do seu vídeo original: {finalInfo.motivo}.

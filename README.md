@@ -148,7 +148,8 @@ Clone em `~/`, não em `/mnt/c/...`: o disco do Windows visto pelo WSL é bem ma
    - clique em **Gerar pacote para o Kaggle** e depois em **Gerar no Kaggle**;
    - quando o vídeo volta, o estúdio troca o rosto pelo das fotos **no seu computador** (FaceFusion,
      na CPU; o Kaggle bloqueia ferramentas de troca de rosto) e cola a pessoa sobre o **seu vídeo
-     original em resolução cheia**, em 1080×1920, com o áudio original e um comparativo lado a lado;
+     original em resolução cheia**, em 1080×1920, no fps dele (o RIFE cria os quadros que o Wan, a
+     16 fps, não gerou), com o áudio original e um comparativo lado a lado;
    - **Comparar ajustes do rosto** mostra, num trecho curto, o rosto com cada trocador e força do
      restaurador, lado a lado; escolha o mais natural;
    - trocou as fotos do rosto ou o ajuste? **Refazer o refino do rosto**, sem gerar no Kaggle de novo.
@@ -179,6 +180,7 @@ O comando `track` faz tudo sem interface e imprime o tempo por quadro. Os pontos
 | `STUDIO_MAX_SECONDS` | `5` | Duração padrão do trecho |
 | `STUDIO_MAX_SIDE` | `854` | Maior lado do clipe (≈480p) |
 | `STUDIO_MAX_FPS` | `30` | FPS máximo do clipe |
+| `STUDIO_INTERPOLATE` | `1` | `0` deixa o vídeo final no fps do Wan (16), sem os quadros intermediários do RIFE |
 | `STUDIO_TRACKER` | `sam2` | `demo` simula o SAM 2 com círculos, só para testar a interface |
 | `NEXT_PUBLIC_ENGINE_URL` | `http://127.0.0.1:8765` | Endereço do motor visto pelo navegador |
 

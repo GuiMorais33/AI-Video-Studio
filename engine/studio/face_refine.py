@@ -735,7 +735,6 @@ def refine(project: dict[str, Any], root: Path, settings: Settings, progress: Pr
     free = free_memory_gb() if need > 0 else None
     if free is not None and free < need:
         raise FaceRefineError(low_memory_message(free, need))
-    previous = read_result(root)
     choice = face_settings(root)
     started = time.monotonic()
     info = media.probe(result)
@@ -829,13 +828,11 @@ def refine(project: dict[str, Any], root: Path, settings: Settings, progress: Pr
                 elif not paste_back(result, face_video, masks, refined, info, size, frames,
                                     lambda f: progress(0.89 + 0.04 * f), stop, weights):
                     reason = f"o FaceFusion devolveu {media.count_frames(face_video)} de {frames} quadros"
-            if reason is None:
-                progress(0.94, "Montando o wan_final.mp4 e o comparativo")
-                wan.finish_result(project, root, refined)
-            elif previous and previous.get("ok"):
-                # O final atual tinha o refino anterior (outras fotos): volta para o vídeo sem refino.
-                progress(0.94, "Refazendo o wan_final.mp4 sem o refino")
-                wan.finish_result(project, root, result)
+            # O final no fps do clipe (RIFE) sai aqui: a importação só deixou uma prévia rápida. Sem o
+            # refino (falhou), o final é o vídeo do Wan, também no fps do clipe.
+            progress(0.93, "Montando o wan_final.mp4 sobre o seu vídeo" + ("" if reason is None else " (sem o refino)"))
+            wan.finish_result(project, root, refined if reason is None else result, rife_dir=settings.rife_dir,
+                              progress=lambda f: progress(0.93 + 0.06 * f))
     finally:
         if masks is not None:
             masks.close()

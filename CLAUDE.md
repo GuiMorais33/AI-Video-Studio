@@ -88,7 +88,12 @@ bash scripts/tests/setup.test.sh && bash scripts/tests/torch-choice.test.sh  # s
     resolução cheia: mesmos quadros (corte/fps do clipe + índices do pacote), mesmo enquadramento
     (`wan_geometry`) e as cores lidas como o clipe chega ao Wan (`media.CLIP_COLORS`, BT.601).
     Cada quadro é conferido contra o `wan_input.mp4`; se não bater, volta a ampliar o vídeo do Wan e
-    grava o motivo em `exports/final.json`. Sai `wan_final.mp4` em 1080x1920 com o áudio.
+    grava o motivo em `exports/final.json`. Sai `wan_final.mp4` em 1080x1920 com o áudio, no fps do
+    clipe: nos quadros que o pacote pulou (30 -> 16 fps), o RIFE v4.6 (`rife.py`, rede reescrita,
+    pesos do GitHub por SHA-256 em `data/models/rife/`) cria a pessoa entre os vizinhos, e a máscara
+    junta a dos dois vizinhos com a do SAM 2 do quadro. Na importação, se o refino vem em seguida,
+    o final é só uma prévia sem RIFE (`final_rife_dir`); o refino monta o definitivo. Os testes
+    desligam o RIFE (`interpolate=False`) e usam um minúsculo local quando precisam.
   - O notebook amplia o resultado 2x com o Real-ESRGAN x2plus (RRDBNet reescrito no notebook,
     pesos do GitHub com SHA-256 conferido), 50% misturado com Lanczos; se falhar, sai 1x com aviso.
   - O FaceFusion local pede Ubuntu 24.04 (Python 3.11+, FFmpeg 5.1+). O `setup.sh` grava

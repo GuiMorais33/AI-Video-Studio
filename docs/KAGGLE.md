@@ -96,13 +96,18 @@ Assim que o vídeo do Kaggle é importado, o estúdio começa o refino sozinho:
 4. a pessoa vai sobre o **seu vídeo original em resolução cheia** (fora da área do personagem, o
    fundo é o que você filmou, não uma cópia reduzida e esticada), no tamanho dos Reels (**1080×1920**
    em pé, 1920×1080 deitado), com o áudio original. Se o original não bater com o pacote (projeto
-   antigo, outro vídeo), o estúdio volta a ampliar o vídeo do Wan inteiro e avisa na etapa 4.
+   antigo, outro vídeo), o estúdio volta a ampliar o vídeo do Wan inteiro e avisa na etapa 4;
+5. o vídeo final volta ao fps do seu vídeo (ex.: 30): o Wan gera a 16 fps, e o RIFE cria a pessoa
+   nos quadros que faltam, a partir dos dois vizinhos (repetir quadros deixaria o movimento
+   picotado). Na primeira vez baixa ~21 MB do GitHub. Sem ele (falha no download), o final fica em
+   16 fps e a etapa 4 avisa.
 
 Enquanto o refino roda, `wan_final.mp4` já existe sem ele. Quando termina, o arquivo é trocado pela
 versão refinada.
 
 - **Tempo:** roda na CPU, então é mais lento que o Kaggle: cerca de 10 min para 5 s de vídeo (77
-  quadros) num processador de 4 núcleos, mais em notebooks mais simples.
+  quadros) num processador de 4 núcleos, mais em notebooks mais simples. Os quadros intermediários
+  do RIFE somam ~1 a 2 min.
 - **Primeira vez:** baixa cerca de 1,7 GB de modelos do FaceFusion (do GitHub).
 - **Requisito:** Ubuntu 24.04 no WSL (Python 3.11+ e FFmpeg 5.1+). No 22.04 o instalador avisa e o
   estúdio funciona sem o refino; atualize com `sudo do-release-upgrade` e rode o instalador de novo.

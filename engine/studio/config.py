@@ -51,6 +51,9 @@ class Settings:
     facefusion_min_memory_gb: float = 5.5
     # Refina o rosto sozinho logo que o vídeo do Wan chega (do Kaggle ou importado à mão).
     face_refine_auto: bool = True
+    # Vídeo final no fps do clipe (ex.: 30): o RIFE cria os quadros que o Wan (16 fps) não gerou.
+    # Baixa ~21 MB do GitHub na primeira vez. Desligado, o final sai no fps do pacote.
+    interpolate: bool = True
 
     @property
     def facefusion_python_path(self) -> Path:
@@ -63,6 +66,11 @@ class Settings:
     @property
     def models_dir(self) -> Path:
         return self.data_dir / "models"
+
+    @property
+    def rife_dir(self) -> Path | None:
+        """Onde ficam os pesos do RIFE; None com a interpolação desligada."""
+        return self.models_dir if self.interpolate else None
 
     @property
     def db_path(self) -> Path:
@@ -88,4 +96,5 @@ class Settings:
             facefusion_idle_timeout_s=_env_float("STUDIO_FACEFUSION_IDLE_TIMEOUT_S", 20 * 60),
             facefusion_min_memory_gb=_env_float("STUDIO_FACEFUSION_MIN_MEMORY_GB", 5.5),
             face_refine_auto=os.environ.get("STUDIO_FACE_REFINE_AUTO", "1") != "0",
+            interpolate=os.environ.get("STUDIO_INTERPOLATE", "1") != "0",
         )

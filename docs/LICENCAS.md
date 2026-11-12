@@ -19,6 +19,7 @@ marcados como **Não** precisariam ser trocados ou licenciados. Isto não é aco
 | YOLOv10 (detector do pré-processamento oficial) | AGPL-3.0 | Evitado | Não precisamos: a caixa da pessoa vem da máscara do SAM 2.1, que acerta mais |
 | ComfyUI | GPL-3.0 | Sim, como ferramenta | Não usado |
 | Real-ESRGAN (RRDBNet e pesos RealESRGAN_x2plus, release v0.2.1) | BSD-3-Clause | Sim | Ampliação 2x do resultado no notebook; a arquitetura foi reescrita no notebook, sem o basicsr |
+| RIFE v4.6 (Practical-RIFE, hzwer; pesos `flownet_v4.6.pkl` na cópia do vs-rife) | MIT | Sim | Quadros intermediários do vídeo final (16 → 30 fps), no computador; a rede foi reescrita em `engine/studio/rife.py` |
 
 ## Refino do rosto (FaceFusion 3.9.1, padrão, roda no computador)
 

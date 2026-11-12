@@ -216,6 +216,14 @@ def create_app(
 
         return jobs.submit(project_id, "face_compare", run, conflict=conflict)
 
+    def final_rife_dir() -> Path | None:
+        """Ao importar um resultado: com o refino do rosto vindo em seguida, o final da importação é só
+        uma prévia rápida (o refino monta o final no fps do clipe, com o RIFE); sem ele, já sai no fps
+        do clipe."""
+        if settings.face_refine_auto and face_refine.status(settings)["installed"]:
+            return None
+        return settings.rife_dir
+
     def auto_face_refine(project_id: str, *, from_kaggle: bool = False) -> str:
         """Começa o refino do rosto logo que chega um resultado novo (padrão: o rosto final igual ao das
         fotos). Devolve um complemento para a mensagem da importação; nunca faz a importação falhar."""
@@ -493,7 +501,7 @@ def create_app(
             return None
 
         def import_and_refine(path: Path) -> str:
-            message = import_result(get_project(project_id), root, path)
+            message = import_result(get_project(project_id), root, path, rife_dir=final_rife_dir())
             return message + auto_face_refine(project_id, from_kaggle=True)
 
         def run(progress: Callable[..., None]) -> str:
@@ -508,7 +516,7 @@ def create_app(
         root = project_paths(settings, project_id).root
         tmp = save_upload(file, root)
         try:
-            message = import_result(project, root, tmp)
+            message = import_result(project, root, tmp, rife_dir=final_rife_dir())
         finally:
             tmp.unlink(missing_ok=True)
         message += auto_face_refine(project_id)
