@@ -53,7 +53,8 @@ export interface Project extends ProjectSummary {
   reference: boolean;
   /** Fotos extras do rosto (01.png, 02.png...), usadas no refino do rosto neste computador. */
   faces: string[];
-  /** A imagem do personagem mudou depois do último pacote: é preciso gerar de novo. */
+  /** A imagem do personagem (ou, se o pacote levou o rosto delas, as fotos do rosto) mudou depois do
+   * último pacote: é preciso gerar de novo. */
   wan_package_stale: boolean;
   wan: Record<WanFile, boolean>;
   /** Refino do rosto (FaceFusion na CPU deste computador), depois que o vídeo do Wan volta. */
@@ -118,7 +119,9 @@ export type WanFile =
   | "facefusion_rosto.log"
   | "comparar_rosto.mp4"
   | "comparar_rosto.png"
-  | "facefusion_comparar.log";
+  | "facefusion_comparar.log"
+  | "referencia_wan.png"
+  | "facefusion_referencia.log";
 
 /** exports/face_refine.json: o último refino do rosto do vídeo atual. */
 export interface FaceRefineResult {
@@ -153,6 +156,8 @@ export interface WanPackageOptions {
   resolution: "480p" | "720p";
   fps: number | null;
   prompt: string;
+  /** Troca o rosto da imagem do personagem pelo das fotos, neste computador, antes do pacote. */
+  rosto_na_referencia: boolean;
 }
 
 export interface Health {

@@ -70,6 +70,20 @@ O notebook **não** troca o rosto: isso é feito no seu computador, logo depois 
 Depois de trocar a imagem do personagem, **gere o pacote de novo**: o botão "Gerar no Kaggle" fica
 bloqueado enquanto o pacote estiver desatualizado. As fotos do rosto não vão para o Kaggle.
 
+### O seu rosto na imagem do personagem
+
+Com a opção **Pôr o rosto das suas fotos na imagem do personagem** (ligada por padrão quando há fotos do
+rosto), o estúdio, **aqui no seu computador** (~20 s), troca o rosto da imagem do personagem pelo das
+fotos antes de montar o pacote. Assim o Wan já gera o seu rosto em todos os ângulos, inclusive de
+perfil, onde a troca de rosto do refino não entra (ela estraga rostos de perfil). Sem isso, num
+personagem do ChatGPT, a pessoa "virava outra" ao virar a cabeça.
+
+O Kaggle recebe só a imagem pronta, como se fosse uma foto sua de corpo inteiro. Nenhuma ferramenta
+de troca de rosto roda lá. Com fundo liso, a imagem também é recortada em volta da pessoa, na
+proporção do vídeo, para o rosto ocupar mais pixels (o Wan reduz a imagem inteira ao tamanho da
+geração). A imagem que foi aparece na etapa 4. Trocar as fotos do rosto deixa esse pacote
+desatualizado.
+
 ## Refino do rosto no seu computador
 
 O Kaggle **bloqueia o FaceFusion e ferramentas parecidas de troca de rosto**. Um funcionário do
@@ -90,7 +104,8 @@ Assim que o vídeo do Kaggle é importado, o estúdio começa o refino sozinho:
    na frente do rosto. Trocador e força do restaurador: os da [comparação de ajustes](#comparar-ajustes-do-rosto)
    (padrão: hyperswap 1a, restaurador 80%);
 3. o rosto refinado é colado de volta com borda suave e estável de um quadro para o outro, **só nos
-   quadros em que o rosto está de frente até três quartos**. De perfil ou de costas, o FaceFusion
+   quadros em que o rosto está de frente até três quartos**, saindo aos poucos conforme a cabeça gira
+   (inteiro até um quarto de giro). De perfil ou de costas, o FaceFusion
    estraga a troca (rachaduras no rosto, boca fora do lugar, olho na bochecha), então ali fica o
    rosto gerado pelo Wan. A troca entra e sai em 3 quadros, sem piscar;
 4. a pessoa vai sobre o **seu vídeo original em resolução cheia** (fora da área do personagem, o

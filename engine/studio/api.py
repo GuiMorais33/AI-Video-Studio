@@ -17,7 +17,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from PIL import Image
 from pydantic import BaseModel, Field
 
-from . import __version__, diagnose, face_compare, face_refine, finish
+from . import __version__, diagnose, face_compare, face_refine, finish, reference
 from .config import MAX_CLIP_SECONDS, Settings
 from .db import Database
 from .jobs import REMOTE_KINDS, JobConflict, JobRunner
@@ -67,6 +67,8 @@ class WanPackageIn(BaseModel):
     resolution: Literal["480p", "720p"] = "480p"
     fps: float | None = Field(default=None, gt=0, le=60)
     prompt: str = Field(default="", max_length=1000)
+    # Troca o rosto da imagem do personagem pelo das fotos aqui, antes do pacote (reference.py).
+    rosto_na_referencia: bool = True
 
 
 class FaceSettingsIn(BaseModel):
@@ -451,9 +453,17 @@ def create_app(
         get_project(project_id)
 
         def run(progress: Callable[..., None]) -> str:
+            root = project_paths(settings, project_id).root
+
+            def prepare(geo) -> tuple[Path, dict[str, Any]]:
+                # O FaceFusion chega a 3,5 GB mesmo numa imagem: solta antes o vídeo do SAM 2.
+                return reference.prepare(root, settings, aspect=geo.width / geo.height,
+                                         put_face=body.rosto_na_referencia, stop=jobs.stopping,
+                                         before_facefusion=session.release)
+
             return build_package(
-                get_project(project_id), project_paths(settings, project_id).root,
-                resolution=body.resolution, fps=body.fps, prompt=body.prompt, progress=progress,
+                get_project(project_id), root, resolution=body.resolution, fps=body.fps, prompt=body.prompt,
+                progress=progress, prepare_reference=prepare,
             )
 
         def conflict() -> str | None:
@@ -497,7 +507,8 @@ def create_app(
             if not (root / "exports" / "wan_package.zip").exists():
                 return "Gere o pacote do Wan antes de enviar ao Kaggle."
             if package_stale(root):
-                return "A imagem do personagem mudou depois do último pacote. Gere o pacote de novo."
+                return ("A imagem do personagem ou as fotos do rosto mudaram depois do último pacote. Gere o pacote "
+                        "de novo.")
             return None
 
         def import_and_refine(path: Path) -> str:

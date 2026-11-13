@@ -71,6 +71,10 @@ TRACK_WINDOW = 2
 # na bochecha): ali fica o rosto do Wan. O ângulo vem da posição do nariz entre os olhos (0,5 = de
 # frente; 0 ou 1 = três quartos, ainda bom; bem fora disso = perfil) e da confiança dos 68 pontos.
 MAX_TURN = 0.55
+# Até aqui (de frente até um quarto de giro) a troca entra inteira; daí até MAX_TURN ela vai saindo aos
+# poucos, conforme a cabeça gira. Ligar e desligar de uma vez fazia o rosto "virar outra pessoa" num
+# instante; aos poucos, a mudança acontece durante o movimento, quando o olho percebe menos.
+FULL_TURN = 0.3
 MIN_LANDMARK_SCORE = 0.5
 # Trechos com troca mais curtos que isto ficam de fora (trocar e destrocar pisca); cada trecho entra
 # e sai em 3 quadros (60%, 80%, 100%).
@@ -615,18 +619,29 @@ def tracked_face(faces: list[dict], mask: np.ndarray | None) -> dict | None:
     return chosen
 
 
+def turn_factor(face: dict | None) -> float:
+    """Quanto da troca o ângulo do rosto permite (0..1): inteira até FULL_TURN, caindo até 0 em MAX_TURN."""
+    if face is None or face["landmarker"] < MIN_LANDMARK_SCORE:
+        return 0.0
+    turn = abs(face["r5"] - 0.5)
+    if turn <= FULL_TURN:
+        return 1.0
+    return max(0.0, (MAX_TURN - turn) / (MAX_TURN - FULL_TURN))
+
+
 def pose_weights(faces: list[list[dict]], person: Callable[[int], np.ndarray | None], frames: int) -> list[float]:
-    """Quanto da troca entra em cada quadro (0..1): só onde o rosto da pessoa rastreada está de frente
-    até três quartos, em trechos de pelo menos MIN_RUN quadros, com entrada e saída suaves."""
-    good = []
-    for t in range(frames):
-        chosen = tracked_face(faces[t] if t < len(faces) else [], person(t))
-        good.append(chosen is not None and chosen["landmarker"] >= MIN_LANDMARK_SCORE
-                    and abs(chosen["r5"] - 0.5) <= MAX_TURN)
+    """Quanto da troca entra em cada quadro (0..1): pelo ângulo do rosto da pessoa rastreada (turn_factor,
+    suavizado entre quadros vizinhos), só em trechos de pelo menos MIN_RUN quadros, com entrada e saída
+    suaves."""
+    factors = [turn_factor(tracked_face(faces[t] if t < len(faces) else [], person(t))) for t in range(frames)]
+    good = [f > 0 for f in factors]
     # Um quadro ruim isolado no meio de quadros bons entra (o rastreador do FaceFusion o preenche).
     for t in range(1, frames - 1):
         if not good[t] and good[t - 1] and good[t + 1]:
             good[t] = True
+            factors[t] = (factors[t - 1] + factors[t + 1]) / 2
+    # O ângulo medido treme um pouco de um quadro para o outro: média com os vizinhos (borda: o próprio).
+    smooth = [sum(factors[min(max(i, 0), frames - 1)] for i in (t - 1, t, t + 1)) / 3 for t in range(frames)]
     weights = [0.0] * frames
     t = 0
     while t < frames:
@@ -641,7 +656,7 @@ def pose_weights(faces: list[list[dict]], person: Callable[[int], np.ndarray | N
                 # Rampa só onde o trecho começa ou termina dentro do vídeo (não no primeiro/último quadro).
                 ramp_in = i - t if t > 0 else 2
                 ramp_out = end - 1 - i if end < frames else 2
-                weights[i] = min(1.0, 0.6 + 0.2 * min(ramp_in, ramp_out))
+                weights[i] = min(1.0, 0.6 + 0.2 * min(ramp_in, ramp_out), smooth[i])
         t = end
     return weights
 

@@ -33,7 +33,8 @@ PACKAGE_FORMAT = 1
 # Área em pixels de cada resolução de geração (mesma regra "por área" do pré-processamento oficial).
 RESOLUTIONS = {"480p": 832 * 480, "720p": 1280 * 720}
 WAN_FILES = ("wan_package.zip", "wan_input.mp4", "wan_result.mp4", "wan_final.mp4", "comparativo.mp4",
-             "facefusion_rosto.log", "comparar_rosto.mp4", "comparar_rosto.png", "facefusion_comparar.log")
+             "facefusion_rosto.log", "comparar_rosto.mp4", "comparar_rosto.png", "facefusion_comparar.log",
+             "referencia_wan.png", "facefusion_referencia.log")
 MAX_REFERENCE_BYTES = 25 * 1024 * 1024
 # Fotos extras do rosto, usadas pelo refino do rosto (FaceFusion) neste computador.
 FACES_DIR = "faces"
@@ -153,12 +154,25 @@ def save_face_photo(upload: Path, root: Path) -> str:
 def package_stale(root: Path) -> bool:
     """A imagem do personagem mudou depois do último pacote: o Kaggle receberia a antiga.
 
-    As fotos do rosto não contam: elas só são usadas aqui, no refino do rosto."""
+    As fotos do rosto só contam quando o pacote levou o rosto delas na imagem do personagem
+    (reference.py); senão elas só são usadas aqui, no refino do rosto."""
     package = root / "exports" / "wan_package.zip"
     reference = root / "reference.png"
     if not package.exists() or not reference.exists():
         return False
-    return reference.stat().st_mtime > package.stat().st_mtime
+    built = package.stat().st_mtime
+    if reference.stat().st_mtime > built:
+        return True
+    try:
+        with zipfile.ZipFile(package) as zf:
+            job = json.loads(zf.read("job.json"))
+    except (OSError, KeyError, ValueError, zipfile.BadZipFile):
+        return False
+    faces = root / FACES_DIR
+    if not (job.get("referencia") or {}).get("rosto") or not faces.is_dir():
+        return False
+    # Foto nova ou apagada muda a pasta; foto trocada muda o arquivo.
+    return max([faces.stat().st_mtime] + [p.stat().st_mtime for p in faces.iterdir()]) > built
 
 
 def delete_face_photo(root: Path, name: str) -> None:
@@ -175,8 +189,12 @@ def build_package(
     fps: float | None = None,
     prompt: str = "",
     progress: Callable[..., None] = lambda *a: None,
+    prepare_reference: Callable[["Geometry"], tuple[Path, dict[str, Any]]] | None = None,
 ) -> str:
-    """Gera exports/wan_package.zip (vídeo + máscaras + referência + job.json) e exports/wan_input.mp4."""
+    """Gera exports/wan_package.zip (vídeo + máscaras + referência + job.json) e exports/wan_input.mp4.
+
+    `prepare_reference(geometria)` devolve a imagem do personagem que vai no pacote e o que foi feito
+    nela (reference.prepare: o rosto das fotos e o recorte). Sem ele, vai a reference.png como está."""
     if resolution not in RESOLUTIONS:
         raise WanError(f"Resolução inválida: {resolution}. Opções: {', '.join(RESOLUTIONS)}.")
     frames_dir, masks_dir, exports = root / "frames", root / "masks" / "obj1", root / "exports"
@@ -201,6 +219,10 @@ def build_package(
     geo = wan_geometry(project["width"], project["height"], RESOLUTIONS[resolution])
 
     exports.mkdir(parents=True, exist_ok=True)
+    reference_info: dict[str, Any] = {"rosto": False, "recorte": False, "avisos": []}
+    if prepare_reference is not None:
+        progress(0.0, "Preparando a imagem do personagem (o seu rosto e o recorte)")
+        reference, reference_info = prepare_reference(geo)
     with tempfile.TemporaryDirectory(dir=root, prefix="wan-") as tmp_name:
         tmp = Path(tmp_name)
         (tmp / "frames").mkdir()
@@ -241,6 +263,8 @@ def build_package(
             "empty_mask_frames": empty,
             "trimmed_frames": trimmed,
             "files": {"video": "video.mp4", "masks": "masks/%05d.png", "reference": "reference.png"},
+            # O que foi feito na imagem do personagem antes de ir (reference.py).
+            "referencia": reference_info,
         }
         package = tmp / "wan_package.zip"
         with zipfile.ZipFile(package, "w", compression=zipfile.ZIP_DEFLATED) as zf:
@@ -252,7 +276,11 @@ def build_package(
         os.replace(tmp / "video.mp4", exports / "wan_input.mp4")
         os.replace(package, exports / "wan_package.zip")
     note = f" ({trimmed} quadro(s) finais cortados para caber nos segmentos de {SEGMENT_FRAMES} do Wan)" if trimmed else ""
-    return f"Pacote pronto: {len(indices)} quadros {geo.width}x{geo.height} @ {float(dst_fps):.2f} fps{note}."
+    done = [what for key, what in (("rosto", "com o rosto das suas fotos"), ("recorte", "recortada em volta da pessoa"))
+            if reference_info.get(key)]
+    extra = f" Imagem do personagem {' e '.join(done)}." if done else ""
+    extra += "".join(f" Aviso: {a}." for a in reference_info.get("avisos", []))
+    return f"Pacote pronto: {len(indices)} quadros {geo.width}x{geo.height} @ {float(dst_fps):.2f} fps{note}.{extra}"
 
 
 def reels_size(width: int, height: int) -> tuple[int, int]:

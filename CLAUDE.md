@@ -84,6 +84,12 @@ bash scripts/tests/setup.test.sh && bash scripts/tests/torch-choice.test.sh  # s
     nítido. Trocador (hyperswap 1a/1b/1c) e força do GFPGAN vêm de `rosto_ajustes.json`, escolhidos
     na comparação (`face_compare.py`): um trecho de ~1,5 s com o rosto de frente, só a troca e só o
     restaurador (força 100) por trocador; as outras forças saem da mistura linear dos dois.
+    A troca sai aos poucos pelo ângulo (`turn_factor`: inteira até 0,3, zero em 0,55).
+  - Perfil: o pacote leva o rosto das fotos já na imagem do personagem (`reference.py`, FaceFusion
+    numa imagem, no computador, chamado pelo `build_package` via `prepare_reference`), recortada justa
+    em volta da pessoa quando o fundo é liso. O Kaggle recebe só a imagem (`exports/referencia_wan.png`);
+    nada de troca de rosto roda lá. Com `"referencia": {"rosto": true}` no `job.json`, mudar as fotos
+    deixa o pacote desatualizado (`package_stale`).
   - O final (`finish.py`, chamado por `wan.finish_result`) cola a pessoa sobre o `source.*` em
     resolução cheia: mesmos quadros (corte/fps do clipe + índices do pacote), mesmo enquadramento
     (`wan_geometry`) e as cores lidas como o clipe chegou ao Wan (`media.clip_colors(job)`: pela

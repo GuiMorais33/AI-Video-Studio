@@ -33,7 +33,8 @@ value = lambda flag: args[args.index(flag) + 1]
 (here / "args.json").write_text(json.dumps(args))
 with open(here / "calls.jsonl", "a") as calls:  # todas as chamadas, em ordem (a comparação roda várias)
     calls.write(json.dumps(args) + "\n")
-shutil.copyfile(value("-t"), here / "alvo.mp4")
+image = value("-o").endswith(".png")  # imagem do personagem (reference.py), não vídeo
+shutil.copyfile(value("-t"), here / ("alvo.png" if image else "alvo.mp4"))
 mode = os.environ.get("FAKE_FACEFUSION_MODE", "ok")
 if mode == "spin":  # download retomado que não anda: o FaceFusion redesenha a mesma barra para sempre
     (here / "pids").write_text(str(os.getpid()))
@@ -61,8 +62,9 @@ effect = "drawbox=x=iw/2-24:y=ih/2-24:w=48:h=48:color=red:t=fill" if mode == "fa
 if mode == "face" and os.environ.get("FAKE_FACEFUSION_NEIGHBOR"):  # o "rosto" vizinho: cores invertidas
     x, y, w, h = os.environ["FAKE_FACEFUSION_NEIGHBOR"].split(":")
     effect = f"{effect},split[a][b];[b]crop={w}:{h}:{x}:{y},negate[c];[a][c]overlay={x}:{y}"
-subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", value("-t"), "-filter_complex", effect, "-c:v", "libx264",
-                "-pix_fmt", "yuv420p", value("-o")], check=True)
+codec = [] if image else ["-c:v", "libx264", "-pix_fmt", "yuv420p"]
+subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", value("-t"), "-filter_complex", effect, *codec, value("-o")],
+               check=True)
 '''
 
 
@@ -134,7 +136,7 @@ def _diff(a: np.ndarray, b: np.ndarray) -> float:
     return float(np.abs(a - b).mean())
 
 
-def _portrait_project(client, tmp_path: Path, faces: int = 2) -> str:
+def _portrait_project(client, tmp_path: Path, faces: int = 2, face_on_reference: bool = True) -> str:
     """Projeto em pé (360x640 -> pacote 464x832, 16 quadros a 16 fps) com pessoa no centro e o pacote pronto."""
     video = make_video(tmp_path / "em-pe.mp4", size="360x640")
     with open(video, "rb") as f:
@@ -151,7 +153,8 @@ def _portrait_project(client, tmp_path: Path, faces: int = 2) -> str:
         Image.new("RGB", (300, 300), (200 - 10 * i, 150, 120)).save(photo)
         with open(photo, "rb") as f:
             client.post(f"/projects/{pid}/faces", files=[("files", (photo.name, f))])
-    resp = client.post(f"/projects/{pid}/wan-package", json={"resolution": "480p", "fps": 16})
+    resp = client.post(f"/projects/{pid}/wan-package", json={"resolution": "480p", "fps": 16,
+                                                             "rosto_na_referencia": face_on_reference})
     client.app.state.jobs.wait_idle(timeout=120)
     assert client.get(f"/jobs/{resp.json()['id']}").json()["status"] == "done"
     return pid
@@ -400,6 +403,21 @@ def test_pose_weights_runs_and_ramps():
     assert face_refine.pose_weights([front] * 5, lambda i: np.zeros((20, 20), bool), 5) == [0.0] * 5
 
 
+def test_pose_weights_fade_as_the_head_turns():
+    """A troca sai aos poucos conforme a cabeça gira (não de uma vez no limite), e volta igual."""
+    def face(turn):
+        return [{"box": [0, 0, 10, 10], "detector": 0.8, "landmarker": 0.9, "r5": 0.5 + turn}]
+    turns = [0, 0, 0.1, 0.2, 0.3, 0.38, 0.45, 0.5, 0.6, 0.7, 0.6, 0.5, 0.45, 0.38, 0.3, 0.2, 0, 0]
+    w = face_refine.pose_weights([face(x) for x in turns], lambda i: None, len(turns))
+    assert w[:4] == [1.0] * 4  # de frente até um quarto: inteira
+    going = w[3:10]
+    assert all(a >= b for a, b in zip(going, going[1:])) and w[9] == 0  # vai saindo, sem degrau
+    assert 0.2 < w[6] < 0.8  # no meio do giro, parcial (antes era 1 até o limite e 0 depois)
+    assert w[8] == 0 and w[-1] == 1.0
+    assert face_refine.turn_factor(face(0.3)[0]) == pytest.approx(1.0) and face_refine.turn_factor(face(0.55)[0]) == 0.0
+    assert face_refine.turn_factor(face(-0.425)[0]) == pytest.approx(0.5)  # para o outro lado, igual
+
+
 def test_face_alpha_follows_what_changed():
     rng = np.random.default_rng(1)
     base = rng.integers(60, 200, (200, 160, 3)).astype(np.uint8)
@@ -527,7 +545,7 @@ def test_engine_shutdown_stops_facefusion(ff_settings, monkeypatch, fake_facefus
 def test_refine_releases_the_tracker_video(ff_settings, fake_facefusion, tmp_path):
     """O SAM 2 guarda o clipe inteiro (~3 GB em 5 s a 30 fps): sai da memória antes do FaceFusion."""
     with TestClient(create_app(ff_settings)) as client:
-        pid = _portrait_project(client, tmp_path)
+        pid = _portrait_project(client, tmp_path, face_on_reference=False)  # o pacote não abre o FaceFusion
         session = client.app.state.session
         assert session._loaded_project == pid  # a seleção deixou o vídeo carregado
         _import(client, pid, _video(tmp_path / "resultado.mp4", "464x832", 16))
@@ -681,9 +699,9 @@ def test_restart_explains_the_interruption(settings):
 def test_no_selection_while_refining(ff_settings, monkeypatch, fake_facefusion, tmp_path):
     """Selecionar a pessoa noutro projeto durante o refino carregaria o vídeo no SAM 2 junto com o
     FaceFusion: a combinação que estourava a memória."""
-    monkeypatch.setenv("FAKE_FACEFUSION_MODE", "hang")
     with TestClient(create_app(ff_settings)) as client:
         a = _portrait_project(client, tmp_path)
+        monkeypatch.setenv("FAKE_FACEFUSION_MODE", "hang")  # só o refino trava (o pacote já saiu)
         video = make_video(tmp_path / "outro.mp4", size="360x640")
         with open(video, "rb") as f:
             b = client.post("/projects", files={"file": ("outro.mp4", f)}).json()["id"]

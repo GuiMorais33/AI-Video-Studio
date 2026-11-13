@@ -28,6 +28,7 @@ export function WanPanel({ project, locked, run }: Props) {
   const [resolution, setResolution] = useState<"480p" | "720p">("480p");
   const [fps, setFps] = useState<string>("16");
   const [prompt, setPrompt] = useState("");
+  const [faceOnReference, setFaceOnReference] = useState(true);
   const [kaggle, setKaggle] = useState<KaggleStatus | null>(null);
   const [account, setAccount] = useState<KaggleAccount | null>(null);
   const [token, setToken] = useState("");
@@ -192,6 +193,22 @@ export function WanPanel({ project, locked, run }: Props) {
             Descrever roupa e materiais deixa o resultado mais fiel à imagem. Gere o pacote de novo depois de trocar a
             imagem do personagem.
           </p>
+          <label className="check">
+            <input
+              type="checkbox"
+              checked={faceOnReference}
+              disabled={project.faces.length === 0 || !faceRefine.installed}
+              onChange={(e) => setFaceOnReference(e.target.checked)}
+            />
+            Pôr o rosto das suas fotos na imagem do personagem
+          </label>
+          <p className="muted small">
+            {project.faces.length === 0
+              ? "Envie as fotos do rosto para usar isto."
+              : !faceRefine.installed
+                ? "Precisa do refino do rosto instalado."
+                : "Feito aqui no seu computador (~20 s): o Wan já gera o seu rosto, inclusive de perfil, onde a troca de rosto não entra. O Kaggle recebe só a imagem pronta. Com fundo liso, a imagem também é recortada em volta da pessoa, para o rosto ocupar mais pixels."}
+          </p>
           {activeJob ? (
             <div className="job">
               <div className="job-head">
@@ -206,7 +223,12 @@ export function WanPanel({ project, locked, run }: Props) {
               disabled={locked || blockers.length > 0}
               onClick={() =>
                 run("Iniciando o pacote…", () =>
-                  engine.wanPackage(project.id, { resolution, fps: fps === "original" ? null : Number(fps), prompt }),
+                  engine.wanPackage(project.id, {
+                    resolution,
+                    fps: fps === "original" ? null : Number(fps),
+                    prompt,
+                    rosto_na_referencia: faceOnReference && project.faces.length > 0 && faceRefine.installed,
+                  }),
                 )
               }
             >
@@ -220,6 +242,12 @@ export function WanPanel({ project, locked, run }: Props) {
             <p>
               <a href={fileUrl(project.id, "wan_package.zip", version)}>Baixar wan_package.zip</a>
             </p>
+          )}
+          {wan["referencia_wan.png"] && (
+            <figure className="reference-sent">
+              <img src={fileUrl(project.id, "referencia_wan.png", version)} alt="Imagem do personagem que vai para o Kaggle" />
+              <figcaption className="muted small">Imagem do personagem que vai para o Kaggle</figcaption>
+            </figure>
           )}
         </div>
 
@@ -276,7 +304,9 @@ export function WanPanel({ project, locked, run }: Props) {
             </button>
           )}
           {!remoteJob && project.wan_package_stale && (
-            <p className="status warn">A imagem do personagem mudou: gere o pacote de novo antes de enviar.</p>
+            <p className="status warn">
+              A imagem do personagem ou as fotos do rosto mudaram: gere o pacote de novo antes de enviar.
+            </p>
           )}
           {!remoteJob && kaggle?.running && kaggle.running.project_id !== project.id && (
             <p className="status warn">Outro projeto está usando o Kaggle agora (um por vez).</p>

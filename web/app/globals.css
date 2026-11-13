@@ -444,6 +444,23 @@ select {
   font-size: 12px;
   color: var(--muted);
 }
+.reference-sent {
+  margin: 10px 0 0;
+}
+.reference-sent img {
+  max-width: 160px;
+  max-height: 240px;
+  border-radius: 6px;
+  background: #000;
+}
+label.check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+label.check input {
+  width: auto;
+}
 .face-compare video {
   width: 100%;
   margin-top: 10px;
