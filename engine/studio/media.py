@@ -7,9 +7,11 @@ import shutil
 import subprocess
 from dataclasses import dataclass
 from fractions import Fraction
+from io import BytesIO
 from pathlib import Path
 
 import numpy as np
+from PIL import Image
 
 
 class MediaError(RuntimeError):
@@ -114,15 +116,22 @@ def prepare_clip(
 
 
 def extract_frames(clip: Path, frames_dir: Path) -> int:
-    """Extrai quadros JPEG nomeados 00000.jpg, 00001.jpg... (formato aceito pelo SAM 2)."""
+    """Extrai quadros JPEG nomeados 00000.jpg, 00001.jpg... (formato aceito pelo SAM 2).
+
+    As cores são convertidas para o que o JPEG guarda e o PIL lê (BT.601, faixa cheia) a partir da
+    marcação do vídeo. Sem isso, um vídeo de celular (BT.709) virava BT.709 lido como BT.601: ~6
+    níveis de diferença em média e até ~15 em cores fortes, herdados pelo Wan e pelo vídeo final.
+    Grava FAITHFUL_COLORS_MARKER na pasta: os pacotes feitos destes quadros leem o original com
+    CLIP_COLORS; os de projetos antigos, com CLIP_COLORS_LEGACY (clip_colors)."""
     frames_dir.mkdir(parents=True, exist_ok=True)
     run([
-        ffmpeg_bin(), "-y", "-v", "error", "-i", str(clip),
+        ffmpeg_bin(), "-y", "-v", "error", "-i", str(clip), "-vf", JPEG_COLORS,
         "-q:v", "2", "-start_number", "0", str(frames_dir / "%05d.jpg"),
     ])
     count = len(list(frames_dir.glob("*.jpg")))
     if count == 0:
         raise MediaError("Nenhum quadro foi extraído do vídeo.")
+    (frames_dir / FAITHFUL_COLORS_MARKER).write_text("cores convertidas pela marcação do vídeo\n")
     return count
 
 
@@ -135,15 +144,51 @@ def count_frames(path: Path) -> int:
     return int(out) if out.isdigit() else 0
 
 
+# Marcação das cores do vídeo final (BT.709, o que os players supõem em vídeo HD).
+BT709_TAGS = ("-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709")
+# Cores dos quadros do clipe (JPEG lidos pelo PIL = BT.601 de faixa cheia), convertidas a partir da
+# marcação do vídeo (BT.709 nos celulares). Medido num vídeo BT.709: ~0,8 nível de diferença contra
+# a leitura fiel, contra ~5-6 (e até 15) sem converter. Vídeo BT.601 ou sem marcação: igual.
+JPEG_COLORS = "scale=in_color_matrix=auto:out_color_matrix=bt601:out_range=pc:flags=accurate_rnd+full_chroma_int"
+FAITHFUL_COLORS_MARKER = ".cores-fieis"
+# Leitura do vídeo original que bate com os quadros do clipe que foram para o Wan (o fundo e a pessoa
+# gerada precisam ter as mesmas cores): a fiel, pela marcação do vídeo...
+CLIP_COLORS = "scale=in_color_matrix=auto:flags=accurate_rnd+full_chroma_int"
+# ...ou, para projetos de antes de 11/2026 (JPEG extraídos sem converter), BT.601 forçado, como eles
+# chegaram ao Wan (diferença de ~1 nível; lendo pela marcação seriam ~6, uma "caixa" em volta da pessoa).
+CLIP_COLORS_LEGACY = "scale=in_color_matrix=bt601:flags=accurate_rnd+full_chroma_int"
+
+
+def clip_colors(job: dict) -> str:
+    """Leitura do original que bate com os quadros deste pacote do Wan (job.json)."""
+    return CLIP_COLORS if job.get("cores") == "fieis" else CLIP_COLORS_LEGACY
+
+
+def first_frame_size(path: Path, start: float = 0.0) -> tuple[int, int]:
+    """Largura x altura do quadro como o ffmpeg entrega (já com a rotação de celular aplicada)."""
+    out = subprocess.run(
+        [ffmpeg_bin(), "-v", "error", "-ss", f"{start:.3f}", "-i", str(path), "-map", "0:v:0", "-frames:v", "1",
+         "-f", "image2pipe", "-c:v", "png", "-"], capture_output=True,
+    )
+    if out.returncode != 0 or not out.stdout:
+        raise MediaError(f"Não foi possível ler um quadro de {path.name}.")
+    with Image.open(BytesIO(out.stdout)) as img:
+        return img.size
+
+
 class FrameReader:
     """Lê um vídeo quadro a quadro (RGB uint8, altura x largura x 3) por um pipe do ffmpeg,
     sem carregar o vídeo inteiro na memória (15 s em 1080x1920 passariam de 2 GB)."""
 
-    def __init__(self, path: Path, width: int, height: int):
+    def __init__(self, path: Path, width: int, height: int, *, input_args: tuple[str, ...] = (),
+                 vf: str | None = None):
+        """`input_args` vão antes do `-i` (ex.: -ss/-t); `vf`, os filtros. A saída tem de ter `width` x `height`."""
         self.shape = (height, width, 3)
         self._size = width * height * 3
+        filters = ["-vf", vf] if vf else []
         self._proc = subprocess.Popen(
-            [ffmpeg_bin(), "-v", "error", "-i", str(path), "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
+            [ffmpeg_bin(), "-v", "error", *input_args, "-i", str(path), "-map", "0:v:0", *filters,
+             "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
         )
 
@@ -171,12 +216,16 @@ class FrameWriter:
     """Grava quadros RGB uint8 num MP4 (H.264) por um pipe do ffmpeg."""
 
     def __init__(self, path: Path, width: int, height: int, fps: Fraction, *, crf: int = 16,
-                 preset: str = "veryfast"):
+                 preset: str = "veryfast", bt709: bool = False):
+        """`bt709`: converte e marca as cores como BT.709 (o que os celulares supõem em vídeo HD).
+        Sem ele, sai em BT.601 sem marcação, como os vídeos intermediários sempre saíram."""
         path.parent.mkdir(parents=True, exist_ok=True)
         self.path = path
+        colors = ["-vf", "scale=out_color_matrix=bt709:flags=accurate_rnd+full_chroma_int",
+                  *BT709_TAGS] if bt709 else []
         self._proc = subprocess.Popen(
             [ffmpeg_bin(), "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{width}x{height}",
-             "-framerate", fps_arg(fps), "-i", "-", "-c:v", "libx264", "-preset", preset, "-crf", str(crf),
+             "-framerate", fps_arg(fps), "-i", "-", *colors, "-c:v", "libx264", "-preset", preset, "-crf", str(crf),
              "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(path)],
             stdin=subprocess.PIPE, stderr=subprocess.PIPE,
         )

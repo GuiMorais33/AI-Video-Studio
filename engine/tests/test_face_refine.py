@@ -14,8 +14,8 @@ import pytest
 from fastapi.testclient import TestClient
 from PIL import Image
 
-from conftest import make_video
-from studio import diagnose, face_refine, kaggle_remote, media
+from conftest import make_video, source_view
+from studio import diagnose, face_compare, face_refine, kaggle_remote, media
 from studio.api import create_app
 from studio.projects import project_paths
 
@@ -31,7 +31,10 @@ if args == ["--version"]:
     sys.exit(0)
 value = lambda flag: args[args.index(flag) + 1]
 (here / "args.json").write_text(json.dumps(args))
-shutil.copyfile(value("-t"), here / "alvo.mp4")
+with open(here / "calls.jsonl", "a") as calls:  # todas as chamadas, em ordem (a comparação roda várias)
+    calls.write(json.dumps(args) + "\n")
+image = value("-o").endswith(".png")  # imagem do personagem (reference.py), não vídeo
+shutil.copyfile(value("-t"), here / ("alvo.png" if image else "alvo.mp4"))
 mode = os.environ.get("FAKE_FACEFUSION_MODE", "ok")
 if mode == "spin":  # download retomado que não anda: o FaceFusion redesenha a mesma barra para sempre
     (here / "pids").write_text(str(os.getpid()))
@@ -59,8 +62,9 @@ effect = "drawbox=x=iw/2-24:y=ih/2-24:w=48:h=48:color=red:t=fill" if mode == "fa
 if mode == "face" and os.environ.get("FAKE_FACEFUSION_NEIGHBOR"):  # o "rosto" vizinho: cores invertidas
     x, y, w, h = os.environ["FAKE_FACEFUSION_NEIGHBOR"].split(":")
     effect = f"{effect},split[a][b];[b]crop={w}:{h}:{x}:{y},negate[c];[a][c]overlay={x}:{y}"
-subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", value("-t"), "-filter_complex", effect, "-c:v", "libx264",
-                "-pix_fmt", "yuv420p", value("-o")], check=True)
+codec = [] if image else ["-c:v", "libx264", "-pix_fmt", "yuv420p"]
+subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", value("-t"), "-filter_complex", effect, *codec, value("-o")],
+               check=True)
 '''
 
 
@@ -132,7 +136,7 @@ def _diff(a: np.ndarray, b: np.ndarray) -> float:
     return float(np.abs(a - b).mean())
 
 
-def _portrait_project(client, tmp_path: Path, faces: int = 2) -> str:
+def _portrait_project(client, tmp_path: Path, faces: int = 2, face_on_reference: bool = True) -> str:
     """Projeto em pé (360x640 -> pacote 464x832, 16 quadros a 16 fps) com pessoa no centro e o pacote pronto."""
     video = make_video(tmp_path / "em-pe.mp4", size="360x640")
     with open(video, "rb") as f:
@@ -149,7 +153,8 @@ def _portrait_project(client, tmp_path: Path, faces: int = 2) -> str:
         Image.new("RGB", (300, 300), (200 - 10 * i, 150, 120)).save(photo)
         with open(photo, "rb") as f:
             client.post(f"/projects/{pid}/faces", files=[("files", (photo.name, f))])
-    resp = client.post(f"/projects/{pid}/wan-package", json={"resolution": "480p", "fps": 16})
+    resp = client.post(f"/projects/{pid}/wan-package", json={"resolution": "480p", "fps": 16,
+                                                             "rosto_na_referencia": face_on_reference})
     client.app.state.jobs.wait_idle(timeout=120)
     assert client.get(f"/jobs/{resp.json()['id']}").json()["status"] == "done"
     return pid
@@ -213,20 +218,23 @@ def test_import_refines_face_automatically(ff_settings, fake_facefusion, tmp_pat
         assert "processing: 100%" in log
         assert client.get(f"/projects/{pid}/files/facefusion_rosto.log").headers["content-type"].startswith("text/plain")
 
-        # Só o personagem foi para o FaceFusion: fora da máscara, preto.
+        # Só o personagem foi para o FaceFusion: fora da máscara, preto. Ampliado 2x (464x832 -> 928x1664):
+        # o rosto fica maior e o FaceFusion acerta mais detalhe, no mesmo tempo.
         target = _frame(fake_facefusion / "alvo.mp4")
-        assert target.shape == (832, 464, 3)
-        assert target[:64, :64].mean() < 3 and target[380:450, 200:260].mean() > 40
+        assert target.shape == (1664, 928, 3)
+        assert target[:128, :128].mean() < 3 and target[760:900, 400:520].mean() > 40
 
-        # Final no tamanho dos Reels, com o áudio do clipe: fundo igual ao resultado do Wan e rosto
-        # (miolo da máscara) trocado pela saída do FaceFusion.
+        # Final no tamanho dos Reels, com o áudio do clipe: fundo do vídeo ORIGINAL (não o do resultado)
+        # e rosto (miolo da máscara) trocado pela saída do FaceFusion.
         final = media.probe(root / "exports" / "wan_final.mp4")
         assert (final.width, final.height) == (1080, 1920) and final.has_audio
         assert media.count_frames(root / "exports" / "wan_final.mp4") == 16
+        assert detail["wan_final_info"]["fundo"] == "original"
         got = _frame(root / "exports" / "wan_final.mp4", 3)
         plain = _cover(_frame(result, 3), (1080, 1920))
+        original = source_view(root, 3, (1080, 1920))
         corner, center = (slice(0, 160), slice(0, 160)), (slice(900, 1020), slice(480, 600))
-        assert _diff(got[corner], plain[corner]) < 12 < _diff(got[corner], 255 - plain[corner])
+        assert _diff(got[corner], original[corner]) < 12 < _diff(got[corner], plain[corner])
         assert _diff(got[center], 255 - plain[center]) < 25 < _diff(got[center], plain[center])
         comp = media.probe(root / "exports" / "comparativo.mp4")
         assert (comp.width, comp.height) == (2 * 540, 960) and comp.has_audio
@@ -395,6 +403,21 @@ def test_pose_weights_runs_and_ramps():
     assert face_refine.pose_weights([front] * 5, lambda i: np.zeros((20, 20), bool), 5) == [0.0] * 5
 
 
+def test_pose_weights_fade_as_the_head_turns():
+    """A troca sai aos poucos conforme a cabeça gira (não de uma vez no limite), e volta igual."""
+    def face(turn):
+        return [{"box": [0, 0, 10, 10], "detector": 0.8, "landmarker": 0.9, "r5": 0.5 + turn}]
+    turns = [0, 0, 0.1, 0.2, 0.3, 0.38, 0.45, 0.5, 0.6, 0.7, 0.6, 0.5, 0.45, 0.38, 0.3, 0.2, 0, 0]
+    w = face_refine.pose_weights([face(x) for x in turns], lambda i: None, len(turns))
+    assert w[:4] == [1.0] * 4  # de frente até um quarto: inteira
+    going = w[3:10]
+    assert all(a >= b for a, b in zip(going, going[1:])) and w[9] == 0  # vai saindo, sem degrau
+    assert 0.2 < w[6] < 0.8  # no meio do giro, parcial (antes era 1 até o limite e 0 depois)
+    assert w[8] == 0 and w[-1] == 1.0
+    assert face_refine.turn_factor(face(0.3)[0]) == pytest.approx(1.0) and face_refine.turn_factor(face(0.55)[0]) == 0.0
+    assert face_refine.turn_factor(face(-0.425)[0]) == pytest.approx(0.5)  # para o outro lado, igual
+
+
 def test_face_alpha_follows_what_changed():
     rng = np.random.default_rng(1)
     base = rng.integers(60, 200, (200, 160, 3)).astype(np.uint8)
@@ -522,7 +545,7 @@ def test_engine_shutdown_stops_facefusion(ff_settings, monkeypatch, fake_facefus
 def test_refine_releases_the_tracker_video(ff_settings, fake_facefusion, tmp_path):
     """O SAM 2 guarda o clipe inteiro (~3 GB em 5 s a 30 fps): sai da memória antes do FaceFusion."""
     with TestClient(create_app(ff_settings)) as client:
-        pid = _portrait_project(client, tmp_path)
+        pid = _portrait_project(client, tmp_path, face_on_reference=False)  # o pacote não abre o FaceFusion
         session = client.app.state.session
         assert session._loaded_project == pid  # a seleção deixou o vídeo carregado
         _import(client, pid, _video(tmp_path / "resultado.mp4", "464x832", 16))
@@ -676,9 +699,9 @@ def test_restart_explains_the_interruption(settings):
 def test_no_selection_while_refining(ff_settings, monkeypatch, fake_facefusion, tmp_path):
     """Selecionar a pessoa noutro projeto durante o refino carregaria o vídeo no SAM 2 junto com o
     FaceFusion: a combinação que estourava a memória."""
-    monkeypatch.setenv("FAKE_FACEFUSION_MODE", "hang")
     with TestClient(create_app(ff_settings)) as client:
         a = _portrait_project(client, tmp_path)
+        monkeypatch.setenv("FAKE_FACEFUSION_MODE", "hang")  # só o refino trava (o pacote já saiu)
         video = make_video(tmp_path / "outro.mp4", size="360x640")
         with open(video, "rb") as f:
             b = client.post("/projects", files={"file": ("outro.mp4", f)}).json()["id"]
@@ -761,7 +784,7 @@ def test_old_1080x1920_result_uses_package_masks(ff_settings, fake_facefusion, t
         assert target[:150, :150].mean() < 3 and target[900:1020, 480:600].mean() > 40
         root = project_paths(ff_settings, pid).root
         got, plain = _frame(root / "exports" / "wan_final.mp4"), _frame(result)
-        assert _diff(got[:160, :160], plain[:160, :160]) < 12
+        assert _diff(got[:160, :160], source_view(root, 0, (1080, 1920))[:160, :160]) < 12  # fundo: o original
         assert _diff(got[900:1020, 480:600], 255 - plain[900:1020, 480:600]) < 25
 
 
@@ -813,3 +836,112 @@ def test_diagnose_reports_facefusion(settings, ff_settings):
     assert ok["ml"]["facefusion"]["installed"] is True and "3.9.1" in ok["ml"]["facefusion"]["version"]
     assert not any("Refino do rosto" in t and "não instalado" in t for t in ok["recommendations"])
     assert any("1,7 GB" in t for t in ok["recommendations"])  # modelos ainda não baixados
+
+
+# --------------------------------------------------------------------------- comparação de ajustes
+
+def _calls(fake_facefusion: Path) -> list[list[str]]:
+    path = fake_facefusion / "calls.jsonl"
+    return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
+
+
+def _opt(args: list[str], flag: str) -> str | None:
+    return args[args.index(flag) + 1] if flag in args else None
+
+
+def test_compare_runs_each_swapper_and_builds_the_grid(ff_settings, fake_facefusion, monkeypatch, tmp_path):
+    settings = dataclasses.replace(ff_settings, face_refine_auto=False)
+    with TestClient(create_app(settings)) as client:
+        pid = _portrait_project(client, tmp_path)
+        root = project_paths(settings, pid).root
+        _import(client, pid, _video(tmp_path / "resultado.mp4", "464x832", 16))
+        assert client.get(f"/projects/{pid}").json()["face_refine"]["settings"] == {
+            "trocador": "hyperswap_1a_256", "restaurador": 80}
+        (fake_facefusion / "calls.jsonl").unlink(missing_ok=True)
+
+        resp = client.post(f"/projects/{pid}/face-compare")
+        assert resp.status_code == 202, resp.text
+        client.app.state.jobs.wait_idle(timeout=300)
+        detail = client.get(f"/projects/{pid}").json()
+        job = detail["jobs"]["face_compare"]
+        assert job["status"] == "done" and job["message"].startswith("Comparação pronta"), job
+
+        # Cada trocador: só a troca e, sobre ela, só o restaurador a 100% (as forças saem da mistura).
+        calls = _calls(fake_facefusion)
+        assert [(_opt(a, "--face-swapper-model"), a[a.index("--processors") + 1]) for a in calls] == [
+            ("hyperswap_1a_256", "face_swapper"), (None, "face_enhancer"),
+            ("hyperswap_1b_256", "face_swapper"), (None, "face_enhancer"),
+            ("hyperswap_1c_256", "face_swapper"), (None, "face_enhancer")]
+        assert all(_opt(a, "--face-enhancer-blend") in (None, "100") for a in calls)
+        assert _opt(calls[1], "-t").endswith("1a-troca.mp4")  # o restaurador vai sobre a troca
+
+        compare = detail["face_refine"]["compare"]
+        labels = [v["rotulo"] for v in compare["variantes"]]
+        assert labels[:3] == ["Sem refino (rosto do Wan)", "hyperswap 1a, restaurador 80% (atual)",
+                              "hyperswap 1a, restaurador 40%"] and len(labels) == 8
+        assert compare["trecho"] == {"inicio": 0, "quadros": 16, "segundos": 1.0}
+        video = root / "exports" / "comparar_rosto.mp4"
+        info = media.probe(video)
+        assert (info.width, info.height) == (4 * 360, 2 * (360 + 34)) and media.count_frames(video) == 16
+        assert client.get(f"/projects/{pid}/files/comparar_rosto.png").headers["content-type"] == "image/png"
+        assert not list(root.glob("comparar-*"))
+
+        # Ampliado no rosto (centro do quadro): sem refino = o vídeo do Wan; sem restaurador = a troca
+        # (o falso inverte as cores); restaurador 80% = quase o restaurado (o falso inverte de volta).
+        grid = _frame(video, 8)
+        cell = lambda i: grid[34 + (i // 4) * 394 + 150:34 + (i // 4) * 394 + 210, (i % 4) * 360 + 150:(i % 4) * 360 + 210]
+        plain, blend80, blend0 = cell(0), cell(1), cell(3)
+        assert _diff(blend0, 255 - plain) < 30 < _diff(blend0, plain)
+        assert _diff(blend80, plain) < _diff(blend80, 255 - plain)
+
+        # Escolher um ajuste vale para o próximo refino.
+        assert client.put(f"/projects/{pid}/face-settings", json={"trocador": "hyperswap_9z", "restaurador": 0}).status_code == 422
+        assert client.put(f"/projects/{pid}/face-settings", json={"trocador": "hyperswap_1b_256", "restaurador": 101}).status_code == 422
+        state = client.put(f"/projects/{pid}/face-settings", json={"trocador": "hyperswap_1b_256", "restaurador": 0}).json()
+        assert state["settings"] == {"trocador": "hyperswap_1b_256", "restaurador": 0}
+        client.post(f"/projects/{pid}/face-refine")
+        client.app.state.jobs.wait_idle(timeout=300)
+        args = json.loads((fake_facefusion / "args.json").read_text())
+        assert _opt(args, "--face-swapper-model") == "hyperswap_1b_256" and "face_enhancer" not in args
+        refine = client.get(f"/projects/{pid}").json()["face_refine"]["result"]
+        assert refine["trocador"] == "hyperswap_1b_256" and refine["restaurador_forca"] == 0 and refine["restaurador"] is None
+
+        # Um vídeo novo do Wan apaga a comparação do anterior (os ajustes escolhidos continuam).
+        _import(client, pid, _video(tmp_path / "outro.mp4", "464x832", 16))
+        detail = client.get(f"/projects/{pid}").json()
+        assert detail["face_refine"]["compare"] is None and not detail["wan"]["comparar_rosto.mp4"]
+        assert detail["face_refine"]["settings"]["trocador"] == "hyperswap_1b_256"
+
+
+def test_compare_with_profile_face_explains(ff_settings, fake_facefusion, monkeypatch, tmp_path):
+    monkeypatch.setenv("FAKE_FACEFUSION_POSE", "profile")
+    settings = dataclasses.replace(ff_settings, face_refine_auto=False)
+    with TestClient(create_app(settings)) as client:
+        pid = _portrait_project(client, tmp_path)
+        _import(client, pid, _video(tmp_path / "resultado.mp4", "464x832", 16))
+        client.post(f"/projects/{pid}/face-compare")
+        client.app.state.jobs.wait_idle(timeout=300)
+        job = client.get(f"/projects/{pid}").json()["jobs"]["face_compare"]
+        assert job["status"] == "error" and "perfil" in job["message"]
+
+
+def test_compare_needs_a_result_and_blocks_clicks(ff_settings, fake_facefusion, monkeypatch, tmp_path):
+    settings = dataclasses.replace(ff_settings, face_refine_auto=False)
+    with TestClient(create_app(settings)) as client:
+        pid = _portrait_project(client, tmp_path)
+        assert client.post(f"/projects/{pid}/face-compare").status_code == 400
+        # Enquanto a comparação roda (FaceFusion ~5 GB), nenhum clique carrega o SAM 2.
+        db = client.app.state.db
+        job = db.create_job(pid, "face_compare")
+        db.update_job(job["id"], status="running")
+        resp = client.post(f"/projects/{pid}/clicks", json={"frame_idx": 0, "x": 10, "y": 10, "label": 1})
+        assert resp.status_code == 409
+
+
+def test_choose_excerpt_and_zoom_box():
+    assert face_compare.choose_excerpt([0, 0, 0], 2) is None
+    assert face_compare.choose_excerpt([0, 0, 1, 1, 1, 0.6, 0, 0], 3) == 2
+    assert face_compare.choose_excerpt([1, 1], 24) == 0
+    # Quadrado de 1,9x o maior lado, empurrado para dentro do quadro.
+    assert face_compare.zoom_box([[10, 10, 50, 60]], (928, 1664)) == (0, 0, 95, 95)
+    assert face_compare.zoom_box([[400, 800, 440, 840], [410, 810, 450, 850]], (928, 1664)) == (378, 778, 472, 872)

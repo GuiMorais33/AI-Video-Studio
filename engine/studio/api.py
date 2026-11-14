@@ -17,7 +17,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from PIL import Image
 from pydantic import BaseModel, Field
 
-from . import __version__, diagnose, face_refine
+from . import __version__, diagnose, face_compare, face_refine, finish, reference
 from .config import MAX_CLIP_SECONDS, Settings
 from .db import Database
 from .jobs import REMOTE_KINDS, JobConflict, JobRunner
@@ -45,6 +45,10 @@ from .wan import (
 log = logging.getLogger(__name__)
 
 
+# Tarefas que rodam o FaceFusion (~5 GB): enquanto uma roda, nenhum clique carrega o SAM 2.
+FACEFUSION_KINDS = ("face_refine", "face_compare")
+
+
 def default_tracker_factory(settings: Settings) -> Callable[[], Tracker]:
     def factory() -> Tracker:
         if settings.tracker == "demo":
@@ -63,6 +67,13 @@ class WanPackageIn(BaseModel):
     resolution: Literal["480p", "720p"] = "480p"
     fps: float | None = Field(default=None, gt=0, le=60)
     prompt: str = Field(default="", max_length=1000)
+    # Troca o rosto da imagem do personagem pelo das fotos aqui, antes do pacote (reference.py).
+    rosto_na_referencia: bool = True
+
+
+class FaceSettingsIn(BaseModel):
+    trocador: Literal["hyperswap_1a_256", "hyperswap_1b_256", "hyperswap_1c_256"]
+    restaurador: int = Field(ge=0, le=100)
 
 
 class ClickIn(BaseModel):
@@ -148,6 +159,8 @@ def create_app(
             "wan_package_stale": package_stale(paths.root),
             "wan": {name: (paths.exports / name).exists() for name in WAN_FILES},
             "face_refine": face_refine_state(paths.root),
+            # De onde veio o fundo do wan_final.mp4: o vídeo original em resolução cheia ou, sem ele, o do Wan.
+            "wan_final_info": finish.read_info(paths.root),
         }
 
     def face_refine_state(root) -> dict[str, Any]:
@@ -157,6 +170,9 @@ def create_app(
             # Por que não dá para refinar e o que fazer (ex.: ffmpeg antigo pede atualizar o Ubuntu).
             "message": None if info["installed"] else face_refine.unavailable_message(info),
             "result": face_refine.read_result(root),
+            # Trocador e força do restaurador do próximo refino (escolhidos na comparação de ajustes).
+            "settings": face_refine.face_settings(root),
+            "compare": face_compare.read_result(root),
         }
 
     def save_upload(upload: UploadFile, directory) -> Any:
@@ -184,6 +200,31 @@ def create_app(
             return face_refine.refine(get_project(project_id), root, settings, progress, stop=jobs.stopping)
 
         return jobs.submit(project_id, "face_refine", run, conflict=conflict)
+
+    def submit_face_compare(project_id: str) -> dict[str, Any]:
+        """Comparação de ajustes do rosto (FaceFusion num trecho curto), na mesma fila do refino."""
+        root = project_paths(settings, project_id).root
+
+        def conflict() -> str | None:
+            if db.active_job(project_id, exclude=REMOTE_KINDS):
+                return "Já existe uma tarefa em andamento neste projeto."
+            if db.active_job(project_id, kinds=REMOTE_KINDS):
+                return "O Kaggle está gerando um vídeo novo para este projeto. Aguarde terminar."
+            return None
+
+        def run(progress: Callable[..., None]) -> str:
+            session.release()  # mesma conta de memória do refino (FaceFusion ~5 GB)
+            return face_compare.compare(get_project(project_id), root, settings, progress, stop=jobs.stopping)
+
+        return jobs.submit(project_id, "face_compare", run, conflict=conflict)
+
+    def final_rife_dir() -> Path | None:
+        """Ao importar um resultado: com o refino do rosto vindo em seguida, o final da importação é só
+        uma prévia rápida (o refino monta o final no fps do clipe, com o RIFE); sem ele, já sai no fps
+        do clipe."""
+        if settings.face_refine_auto and face_refine.status(settings)["installed"]:
+            return None
+        return settings.rife_dir
 
     def auto_face_refine(project_id: str, *, from_kaggle: bool = False) -> str:
         """Começa o refino do rosto logo que chega um resultado novo (padrão: o rosto final igual ao das
@@ -305,7 +346,7 @@ def create_app(
         ensure_idle(project_id)
         # O clique carrega o vídeo inteiro no SAM 2 (~2 GB): junto com o FaceFusion de outro projeto,
         # é a combinação que estoura a memória do WSL.
-        if db.active_job(None, kinds=("face_refine",)) is not None:
+        if db.active_job(None, kinds=FACEFUSION_KINDS) is not None:
             raise HTTPException(409, "O refino do rosto está usando a memória do computador. Aguarde ele "
                                      "terminar para selecionar a pessoa.")
         check_frame(project, body.frame_idx)
@@ -412,9 +453,17 @@ def create_app(
         get_project(project_id)
 
         def run(progress: Callable[..., None]) -> str:
+            root = project_paths(settings, project_id).root
+
+            def prepare(geo) -> tuple[Path, dict[str, Any]]:
+                # O FaceFusion chega a 3,5 GB mesmo numa imagem: solta antes o vídeo do SAM 2.
+                return reference.prepare(root, settings, aspect=geo.width / geo.height,
+                                         put_face=body.rosto_na_referencia, stop=jobs.stopping,
+                                         before_facefusion=session.release)
+
             return build_package(
-                get_project(project_id), project_paths(settings, project_id).root,
-                resolution=body.resolution, fps=body.fps, prompt=body.prompt, progress=progress,
+                get_project(project_id), root, resolution=body.resolution, fps=body.fps, prompt=body.prompt,
+                progress=progress, prepare_reference=prepare,
             )
 
         def conflict() -> str | None:
@@ -458,11 +507,12 @@ def create_app(
             if not (root / "exports" / "wan_package.zip").exists():
                 return "Gere o pacote do Wan antes de enviar ao Kaggle."
             if package_stale(root):
-                return "A imagem do personagem mudou depois do último pacote. Gere o pacote de novo."
+                return ("A imagem do personagem ou as fotos do rosto mudaram depois do último pacote. Gere o pacote "
+                        "de novo.")
             return None
 
         def import_and_refine(path: Path) -> str:
-            message = import_result(get_project(project_id), root, path)
+            message = import_result(get_project(project_id), root, path, rife_dir=final_rife_dir())
             return message + auto_face_refine(project_id, from_kaggle=True)
 
         def run(progress: Callable[..., None]) -> str:
@@ -477,7 +527,7 @@ def create_app(
         root = project_paths(settings, project_id).root
         tmp = save_upload(file, root)
         try:
-            message = import_result(project, root, tmp)
+            message = import_result(project, root, tmp, rife_dir=final_rife_dir())
         finally:
             tmp.unlink(missing_ok=True)
         message += auto_face_refine(project_id)
@@ -493,6 +543,23 @@ def create_app(
             raise HTTPException(400, face_refine.unavailable_message(info))
         return submit_face_refine(project_id)
 
+    @app.post("/projects/{project_id}/face-compare", status_code=202)
+    def face_compare_run(project_id: str) -> dict[str, Any]:
+        get_project(project_id)
+        if not (project_paths(settings, project_id).exports / "wan_result.mp4").exists():
+            raise HTTPException(400, "Importe ou gere o resultado do Wan antes de comparar os ajustes do rosto.")
+        info = face_refine.status(settings)
+        if not info["installed"]:
+            raise HTTPException(400, face_refine.unavailable_message(info))
+        return submit_face_compare(project_id)
+
+    @app.put("/projects/{project_id}/face-settings")
+    def face_settings_save(project_id: str, body: FaceSettingsIn) -> dict[str, Any]:
+        get_project(project_id)
+        root = project_paths(settings, project_id).root
+        face_refine.save_face_settings(root, body.trocador, body.restaurador)
+        return face_refine_state(root)
+
     @app.get("/projects/{project_id}/files/{name}")
     def get_file(project_id: str, name: str) -> FileResponse:
         get_project(project_id)
@@ -505,7 +572,8 @@ def create_app(
             raise HTTPException(404, "Arquivo desconhecido.")
         if not path.exists():
             raise HTTPException(404, "Arquivo ainda não gerado.")
-        media_type = {".zip": "application/zip", ".log": "text/plain; charset=utf-8"}.get(path.suffix, "video/mp4")
+        media_type = {".zip": "application/zip", ".log": "text/plain; charset=utf-8",
+                      ".png": "image/png"}.get(path.suffix, "video/mp4")
         return FileResponse(path, media_type=media_type, filename=f"{project_id}-{name}",
                             headers={"Cache-Control": "no-store"})
 

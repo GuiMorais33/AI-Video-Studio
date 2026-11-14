@@ -106,3 +106,43 @@ def anchor_points(
         spread = max(8, 2 * level)
         depth[(xx - x) ** 2 + (yy - y) ** 2 <= spread ** 2] = 0
     return points
+
+
+# --------------------------------------------------------------------------- máscara da geração
+# A mesma do notebook do Kaggle: dilatação 7x7 x3 do pré-processamento oficial do Wan e blocos de
+# 16 px do template ComfyUI. O personagem gerado só vale dentro dela.
+GEN_MASK_KERNEL = 7
+GEN_MASK_ITERATIONS = 3
+GEN_MASK_BLOCK = 16
+# Borda suave da colagem do personagem sobre o fundo (o composite_feather do notebook).
+COMPOSITE_FEATHER = 6
+
+
+def dilate(mask: np.ndarray, kernel: int, iterations: int) -> np.ndarray:
+    """Igual a cv2.dilate(mask, ones((k, k)), iterations): quadrado de lado (k-1)*it+1."""
+    radius = (kernel - 1) // 2 * iterations
+    out = mask.astype(bool)
+    for axis in (0, 1):
+        padded = np.pad(out, [(radius, radius) if a == axis else (0, 0) for a in (0, 1)])
+        acc = np.zeros_like(out)
+        size = out.shape[axis]
+        for shift in range(2 * radius + 1):
+            acc |= padded[shift:shift + size] if axis == 0 else padded[:, shift:shift + size]
+        out = acc
+    return out
+
+
+def blockify(mask: np.ndarray, block: int) -> np.ndarray:
+    """Cada bloco block x block com algum pixel da máscara vira bloco cheio (contorno em degraus)."""
+    if block <= 1:
+        return mask.astype(bool)
+    h, w = mask.shape
+    ph, pw = -h % block, -w % block
+    padded = np.pad(mask.astype(bool), ((0, ph), (0, pw)))
+    grid = padded.reshape(padded.shape[0] // block, block, padded.shape[1] // block, block).any(axis=(1, 3))
+    return np.kron(grid, np.ones((block, block), bool))[:h, :w]
+
+
+def generation_mask(mask: np.ndarray) -> np.ndarray:
+    """Área que o Wan gera, a partir da máscara do SAM 2 no tamanho da geração (bool)."""
+    return blockify(dilate(mask, GEN_MASK_KERNEL, GEN_MASK_ITERATIONS), GEN_MASK_BLOCK)

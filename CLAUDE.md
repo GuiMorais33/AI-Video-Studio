@@ -80,6 +80,32 @@ bash scripts/tests/setup.test.sh && bash scripts/tests/torch-choice.test.sh  # s
     De perfil o FaceFusion estraga a troca: `facefusion_probe.py` (roda com o Python do FaceFusion)
     mede o ângulo do rosto em cada quadro, e só entram os quadros de frente até três quartos, em
     trechos de 3+ quadros com rampa de entrada e saída.
-    Grava `wan_final.mp4` em 1080x1920 com o áudio.
+    Troca o rosto no vídeo ampliado 2x (`work_size`): medido, mesmo tempo e memória, rosto mais
+    nítido. Trocador (hyperswap 1a/1b/1c) e força do GFPGAN vêm de `rosto_ajustes.json`, escolhidos
+    na comparação (`face_compare.py`): um trecho de ~1,5 s com o rosto de frente, só a troca e só o
+    restaurador (força 100) por trocador; as outras forças saem da mistura linear dos dois.
+    A troca sai aos poucos pelo ângulo (`turn_factor`: inteira até 0,3, zero em 0,55).
+  - Perfil: o pacote leva o rosto das fotos já na imagem do personagem (`reference.py`, FaceFusion
+    numa imagem, no computador, chamado pelo `build_package` via `prepare_reference`), recortada justa
+    em volta da pessoa quando o fundo é liso. O Kaggle recebe só a imagem (`exports/referencia_wan.png`);
+    nada de troca de rosto roda lá. Com `"referencia": {"rosto": true}` no `job.json`, mudar as fotos
+    deixa o pacote desatualizado (`package_stale`).
+  - O final (`finish.py`, chamado por `wan.finish_result`) cola a pessoa sobre o `source.*` em
+    resolução cheia: mesmos quadros (corte/fps do clipe + índices do pacote), mesmo enquadramento
+    (`wan_geometry`) e as cores lidas como o clipe chegou ao Wan (`media.clip_colors(job)`: pela
+    marcação do vídeo; BT.601 forçado nos pacotes de projetos antigos, sem `"cores": "fieis"`).
+    `media.extract_frames` converte as cores pela marcação (BT.709 nos celulares) e grava
+    `frames/.cores-fieis`; o pacote copia isso para o `job.json`.
+    Cada quadro é conferido contra o `wan_input.mp4`; se não bater, volta a ampliar o vídeo do Wan e
+    grava o motivo em `exports/final.json`. Sai `wan_final.mp4` em 1080x1920 com o áudio, no fps do
+    clipe: nos quadros que o pacote pulou (30 -> 16 fps), o RIFE v4.6 (`rife.py`, rede reescrita,
+    pesos do GitHub por SHA-256 em `data/models/rife/`) cria a pessoa entre os vizinhos, e a máscara
+    junta a dos dois vizinhos com a do SAM 2 do quadro. Borda: dentro da máscara da geração, onde o
+    vídeo do Wan ficou parecido com o original (`changed_weight`, diferença suave entre 10 e 28), entra o
+    original nítido; na silhueta original + 4 px (`core_mask`), sempre o Wan. Na importação, se o refino vem em seguida,
+    o final é só uma prévia sem RIFE (`final_rife_dir`); o refino monta o definitivo. Os testes
+    desligam o RIFE (`interpolate=False`) e usam um minúsculo local quando precisam.
+  - O notebook amplia o resultado 2x com o Real-ESRGAN x2plus (RRDBNet reescrito no notebook,
+    pesos do GitHub com SHA-256 conferido), 50% misturado com Lanczos; se falhar, sai 1x com aviso.
   - O FaceFusion local pede Ubuntu 24.04 (Python 3.11+, FFmpeg 5.1+). O `setup.sh` grava
     `.venv/.aivs-ok` só quando a instalação termina; sem ele, o motor não o considera instalado.

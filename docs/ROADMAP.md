@@ -14,9 +14,9 @@ troca de rosto.
 | 2. SAM 2.1 | Selecionar pessoa com clique, rastrear, corrigir, exportar prévia | Rastrear uma pessoa por 5 s e corrigir as máscaras, com vídeo real | **Validada com pesos reais em 2 vídeos reais** (ver abaixo); vale repetir com um vídeo seu |
 | 3. Teste do Wan Animate | Notebook Kaggle que roda o Wan 2.2 Animate (replace) com diffusers, usando nossas máscaras ([guia](KAGGLE.md)) | Um clipe de 3–5 s com personagem substituído, gerado sem custo; tempo e qualidade anotados | **Concluída em 09/10/2026:** clipe de 4,8 s gerado numa T4 grátis em 34 min, com vídeo real (ver abaixo) |
 | 4. Integração | Envio do clipe + máscara + referência do ChatGPT para o Kaggle e retorno do resultado ao estúdio | Fluxo de ponta a ponta disparado pelo estúdio | **Funcionou de ponta a ponta pelo motor** (mesmas funções do botão, 4 execuções reais); falta disparar pelo botão no seu PC com um vídeo seu |
-| 5. Refinamento | Composição com bordas suaves, ajuste de cor, upscale para 1080×1920, áudio original | Vídeo final pronto para Reels com comparativo antes/depois | **Parcial:** composição sobre o original (no Kaggle) e 1080×1920 com áudio (no computador) implementados; o Real-ESRGAN saiu porque rodava pelo FaceFusion, bloqueado no Kaggle. Falta upscale por IA, interpolação para 30 fps e ajuste de cor |
+| 5. Refinamento | Composição com bordas suaves, ajuste de cor, upscale para 1080×1920, áudio original | Vídeo final pronto para Reels com comparativo antes/depois | **Parcial (11/2026):** o final é montado sobre o **seu vídeo original em resolução cheia** (só a área da pessoa vem do Wan), com áudio, em 1080×1920; o notebook amplia 2x com o Real-ESRGAN (misturado meio a meio com a ampliação simples para a pele não ficar "pintada"), testado na CPU, **falta medir numa T4**. O final volta ao fps do seu vídeo (ex.: 30) com o RIFE criando os quadros que o Wan (16 fps) não gerou. Falta ajuste de cor ([detalhes](#fase-5-e-3b--qualidade-112026)) |
 | 6. Interface definitiva | Biblioteca de personagens, histórico, fila de gerações | Fluxo aprovado executado só pela interface | A fazer |
-| 3b. Refino do rosto | FaceFusion 3.9.1 depois do Wan, com várias fotos do rosto; padrão, **no computador** (o Kaggle cancelou a sessão com FaceFusion: ferramentas de troca de rosto são bloqueadas lá) | Rosto final reconhecível como a pessoa das fotos, num vídeo real | Implementado no motor e testado na CPU com os modelos reais; falta um vídeo seu do começo ao fim |
+| 3b. Refino do rosto | FaceFusion 3.9.1 depois do Wan, com várias fotos do rosto; padrão, **no computador** (o Kaggle cancelou a sessão com FaceFusion: ferramentas de troca de rosto são bloqueadas lá) | Rosto final reconhecível como a pessoa das fotos, num vídeo real | Implementado no motor e testado na CPU com os modelos reais. Desde 11/2026 troca o rosto no vídeo ampliado 2x (medido: mesmo tempo e memória, rosto sem serrilhado) e tem a **comparação de ajustes** (hyperswap 1a/1b/1c × força do restaurador, lado a lado). Falta um vídeo seu do começo ao fim |
 
 ## Fase 2 — como validar com vídeo real
 
@@ -116,3 +116,32 @@ dançando de capa amarela, 4,8 s a 16 fps, 464×832) e a imagem de referência o
 - Python 3.13, PyTorch 2.11 + CUDA 12.8, 2× T4;
 - pico de 12,7 GB (texto) e 8,3 GB (geração) na GPU 0;
 - geração em 21 min: 6 passos de ~2,5 min mais o VAE.
+
+## Fase 5 e 3b — qualidade (11/2026)
+
+Revisão feita para o rosto e o vídeo final ficarem mais naturais. Tudo medido na CPU do ambiente de
+nuvem do Claude Code com o FaceFusion 3.9.1 real, num vídeo de teste em pé com rosto pequeno (como num
+vídeo de corpo inteiro: ~65 px de rosto em 464×832).
+
+| Mudança | Antes | Agora | Medida |
+|---|---|---|---|
+| Fundo do vídeo final | o vídeo do Wan inteiro (464×832) esticado até 1080×1920, inclusive o fundo, que nem foi mexido | a pessoa colada sobre o vídeo original em resolução cheia, nos mesmos quadros e enquadramento do pacote | conferido quadro a quadro contra o pacote: diferença de 1,5 nível (0–255) num vídeo real; se passar de 8, volta ao jeito antigo e avisa |
+| Onde o rosto é trocado | em 464×832 (o rosto de 512 px do FaceFusion era espremido em ~65 px e depois esticado) | no vídeo ampliado 2x | 51 quadros: 194 s e 5,2 GB antes, 195 s e 5,1 GB agora; olhos e boca sem serrilhado |
+| Ampliação no Kaggle | nenhuma (o Real-ESRGAN saiu junto com o FaceFusion) | Real-ESRGAN x2plus, 50% misturado com a ampliação simples | puro, apaga sardas e "pinta" a pele; 50% fica nítido e natural (comparado com o original em 1080p). Na CPU leva ~45 s por quadro, por isso fica no Kaggle |
+| Ajustes do rosto | fixos: hyperswap 1a + GFPGAN 80% | comparação num trecho de ~1,5 s com o rosto de frente, e você escolhe | 6 execuções do FaceFusion num trecho de 24 quadros: 9 min na CPU, contando o download do hyperswap 1b e 1c |
+| Borda em volta da pessoa | a faixa da máscara alargada e em blocos (~9 a 25 px) inteira do Wan: fundo redesenhado em 480p, uma "aura" mais mole | onde o Wan ficou parecido com o original, o original nítido; onde difere (a pessoa gerada, cabelo e roupa além da silhueta), o Wan; na silhueta original, sempre o Wan | teste com a faixa redesenhada 6 níveis mais clara: no final, desvio de menos de 2 níveis contra o original (antes, ~6); o personagem além da silhueta continua inteiro. A fração da faixa que voltou ao original fica em `final.json` (`borda_original`) |
+| Rosto de perfil | o rosto da referência (num personagem do ChatGPT, o do ChatGPT): ao virar a cabeça, a pessoa "virava outra", num corte de 3 quadros | o rosto das fotos já vai na imagem do personagem (trocado no computador, ~18 s, 3,5 GB; o Kaggle recebe só a imagem), e a troca do refino sai aos poucos conforme a cabeça gira; com fundo liso, a imagem vai recortada em volta da pessoa | troca na imagem medida com o FaceFusion real; o efeito no perfil só dá para ver com um vídeo gerado pelo Wan |
+| fps do vídeo final | 16 (o do Wan), quadros repetidos até 30 | o fps do clipe (ex.: 30): o RIFE v4.6 cria a pessoa entre os dois quadros vizinhos | quadro recriado contra o verdadeiro: 35,9 dB, contra 23,6 dB repetindo o anterior (vídeo de crianças pulando, 30 fps). Na CPU, 0,8 s por quadro criado com a pessoa em 1664×928: ~1 min a mais para 5 s de vídeo |
+
+Cores: os quadros do clipe eram lidos sempre como BT.601, e um vídeo de celular (BT.709) virava
+"BT.709 lido como BT.601", com ~6 níveis de diferença em média e até ~15 em cores fortes, herdados pelo
+Wan e pelo final. Agora a extração converte pela marcação do vídeo: ~0,8 nível contra a leitura fiel,
+e nada muda em vídeo BT.601 ou sem marcação. O fundo do original é lido do mesmo jeito que os quadros
+do pacote; num pacote de projeto antigo (`"cores": "bt601"` no `job.json`), do jeito antigo. Lido do
+jeito trocado, a diferença contra o pacote sobe de ~3 para 8–9 e o estúdio cai na reserva.
+
+Escolha do RIFE: quadro do meio recriado a partir dos vizinhos e comparado com o verdadeiro (PSNR).
+Crianças pulando (movimento rápido): repetir 23,4 dB, misturar os dois 26,0, RIFE v4.6 30,5, v4.7 30,3,
+v4.9 30,1. Rosto falando: 36,6 / 43,2 / 44,4 / 44,6 / 44,2. A v4.6 ganha no movimento rápido (dança).
+
+Falta: medir o tempo do Real-ESRGAN numa T4, e o fluxo inteiro com um vídeo seu.

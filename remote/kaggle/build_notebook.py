@@ -32,10 +32,13 @@ Este notebook é gerado pelo AI Video Studio. Ele:
 2. extrai a pose e o rosto da pessoa;
 3. gera o personagem da imagem de referência no lugar dela, com o Wan 2.2 Animate;
 4. cola o personagem sobre o vídeo original (o fundo fica intacto);
-5. grava `resultado.mp4` (no tamanho da geração, ex.: 464x832) e `relatorio.json` na aba **Output**.
+5. amplia 2x com o Real-ESRGAN (ampliação de imagem comum, misturada meio a meio com a simples para
+   a pele não ficar "pintada");
+6. grava `resultado.mp4` (ex.: 928x1664) e `relatorio.json` na aba **Output**.
 
-O refino do rosto com as fotos e o ajuste ao tamanho dos Reels (1080x1920) acontecem depois, no seu
-computador, quando o estúdio importa o resultado. A equipe do Kaggle avisou que o FaceFusion e
+O refino do rosto com as fotos, a colagem sobre o vídeo original em resolução cheia e o ajuste ao
+tamanho dos Reels (1080x1920) acontecem depois, no seu computador, quando o estúdio importa o
+resultado. A equipe do Kaggle avisou que o FaceFusion e
 ferramentas parecidas de troca de rosto são bloqueados na plataforma (a sessão é encerrada e a conta
 pode ser banida por "Resource abuse"), então este notebook não baixa nem roda nenhuma delas.
 
